@@ -1,48 +1,50 @@
-## [2025-05-01] - 文檔與視覺化更新
+# Changelog
 
-### [docs]
-- 添加知識圖譜視覺化示例到 README.md
-- 更新文檔以反映跨檔案依賴分析功能
-- 擴展 MCP 查詢示例以包含跨檔案分析案例
-- 完善專案架構說明
+## [2025-05-01] - Documentation and Visualization Updates
 
-## [2025-05-01] - 修復關係重複問題
+### [DOCS]
+- Added knowledge graph visualization example to README.md
+- Updated documentation to reflect cross-file dependency analysis functionality
+- Extended MCP query examples with cross-file analysis cases
+- Improved project structure documentation
 
-### [fix]
-- 解決相同 IMPORTS_FROM 關係重複建立的問題
-- 實現關係的唯一性檢查機制
-- 優化模組導入處理邏輯，按源文件分組處理
-- 添加導入符號的智慧分組追蹤
+## [2025-05-01] - Fixed Relationship Duplication Issues
 
-## [2025-05-01] - 修復檔案節點重複問題
+### [FIX]
+- Resolved duplicate IMPORTS_FROM relationship creation issues
+- Implemented relationship uniqueness verification mechanism
+- Optimized module import processing logic with source file grouping
+- Added intelligent symbol import grouping tracking
 
-### [fix]
-- 修復模組與檔案節點重複建立的問題
-- 實現模組名稱與檔案節點的直接關聯
-- 優化導入依賴關係的追蹤機制
-- 改進跨檔案符號引用的處理方式
+## [2025-05-01] - Fixed File Node Duplication Issues
 
-## [2025-05-01] - 增強跨檔案依賴關係
+### [FIX]
+- Fixed duplicate creation of module and file nodes
+- Implemented direct association between module names and file nodes
+- Optimized import dependency tracking mechanism
+- Improved cross-file symbol reference handling
 
-### [feat]
-- 實現模組間導入關係的追蹤與建立
-- 增強 AST 解析器支援檔案間符號依賴分析
-- 支援從一個檔案導入另一個檔案類別/函數的關係建立
-- 實現跨檔案函數調用和類別繼承關係的追蹤
+## [2025-05-01] - Enhanced Cross-File Dependency Relationships
 
-## [2025-04-30] - 初始版本
+### [FEAT]
+- Implemented inter-module import relationship tracking and creation
+- Enhanced AST parser to support cross-file symbol dependency analysis
+- Added support for tracking relationships between imported symbols across files
+- Implemented cross-file function call and class inheritance relationship tracking
 
-### [feat]
-- 實現 AST 解析器，支援 Python 程式碼結構分析
-- 整合 OpenAI Embeddings 進行程式碼語義編碼
-- 建立 Neo4j 圖形資料庫模型，實現程式碼知識圖譜
-- 開發 MCP Server 介面，提供程式碼查詢與分析功能
+## [2025-04-30] - Initial Version
 
-### [docs]
-- 撰寫詳細的 README.md，包含專案概述、安裝指南與使用說明
-- 建立 TODO.md 追蹤開發進度與未來規劃
+### [FEAT]
+- Implemented AST parser with Python code structure analysis support
+- Integrated OpenAI Embeddings for code semantic encoding
+- Established Neo4j graph database model for code knowledge graph
+- Developed MCP Server interface for code querying and analysis
 
-### [build]
-- 建立專案基本架構與目錄結構
-- 設定虛擬環境與依賴管理
-- 配置 Neo4j 與 OpenAI API 整合
+### [DOCS]
+- Created detailed README.md with project overview, installation guide, and usage instructions
+- Established TODO.md to track development progress and future plans
+
+### [BUILD]
+- Created basic project structure and directory organization
+- Set up virtual environment and dependency management
+- Configured Neo4j and OpenAI API integration
