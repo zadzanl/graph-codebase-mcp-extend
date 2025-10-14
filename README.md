@@ -50,14 +50,7 @@ This structured representation enables AI to more effectively understand the str
 
 ## Parallel Indexing
 
-Graph-Codebase-MCP supports parallel indexing to dramatically speed up processing of large codebases. When enabled, the system automatically selects the optimal execution strategy based on your Python version and codebase size.
-
-### Performance Benefits
-
-- **2x+ speedup** on large codebases (1000+ files) with Python 3.14 free-threaded
-- **1.5x+ speedup** on standard Python (using ProcessPoolExecutor)
-- Automatic fallback to sequential processing for small codebases (< 50 files)
-- Adaptive worker count based on CPU cores
+Graph-Codebase-MCP supports parallel indexing to dramatically speed up processing of large codebases. When available, the system automatically selects the optimal execution strategy based on your Python version and codebase size. The system will automatically fallback to sequential processing for small codebases (< 50 files) or when free-threading isnt available. It also scales based on CPU cores
 
 ### How It Works
 
@@ -83,20 +76,7 @@ MIN_FILES_FOR_PARALLEL=50
 NEO4J_MAX_CONNECTION_POOL_SIZE=16
 ```
 
-### Executor Selection
-
-The system automatically chooses the best executor:
-
-- **ThreadPoolExecutor** (Python 3.14 free-threaded with GIL disabled): True parallelism without multi-process overhead
-- **ProcessPoolExecutor** (Standard Python with GIL): Parallelism via separate processes
-- **Sequential** (Small codebases or disabled): No parallelism overhead for small workloads
-
 ### Troubleshooting
-
-**Warning: GIL re-enabled during execution**
-- Some C extensions re-enable the GIL at runtime
-- Performance impact may occur, but execution continues safely
-- Consider upgrading problematic dependencies to GIL-free versions
 
 **Connection pool exhausted**
 - Increase `NEO4J_MAX_CONNECTION_POOL_SIZE` (recommended: `MAX_WORKERS * 2`)
@@ -104,7 +84,6 @@ The system automatically chooses the best executor:
 
 **Performance not improving**
 - Ensure you have Python 3.14 free-threaded for best results
-- Verify your codebase has > 50 files (MIN_FILES_FOR_PARALLEL)
 - Check CPU utilization - you may already be I/O bound
 
 ## Installation Guide
@@ -139,7 +118,7 @@ References:
 
 Create a `.env` file or use `mcp.json` to specify environment parameters:
 
-`.env` file example:
+#### `.env` file example:
 ```
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
@@ -152,7 +131,7 @@ MIN_FILES_FOR_PARALLEL=50
 NEO4J_MAX_CONNECTION_POOL_SIZE=16
 ```
 
-Or `mcp.json` file example:
+#### `mcp.json` file example:
 ```json
 {
   "mcpServers": {
@@ -264,5 +243,4 @@ You can configure the embedding provider by setting the following environment va
 - `EMBEDDING_API_BASE_URL`: The base URL for a generic provider.
 
 ---
-
 
