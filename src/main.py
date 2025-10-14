@@ -1,105 +1,128 @@
 import os
 import argparse
 import logging
-import sys
 from typing import Dict, List, Any, Tuple, Optional
 from dotenv import load_dotenv
 import json
 
-from ast_parser.parser import ASTParser
-from embeddings.embedder import OpenAIEmbeddings, CodeEmbedder
-from neo4j_storage.graph_db import Neo4jDatabase
+from src.ast_parser.parser import ASTParser
+from src.embeddings.factory import get_embedding_provider
+from src.embeddings.embedder import CodeEmbedder, OpenAIEmbeddings
+from src.neo4j_storage.graph_db import Neo4jDatabase
 
 load_dotenv()
 
 # 設置日誌
+# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 class CodebaseKnowledgeGraph:
     """Codebase知識圖譜的創建與管理類"""
+    # Class for creating and managing the codebase knowledge graph
     
     def __init__(
         self,
-        neo4j_uri: str = None,
-        neo4j_user: str = None,
-        neo4j_password: str = None,
-        openai_api_key: str = None
+        neo4j_uri: Optional[str] = None,
+        neo4j_user: Optional[str] = None,
+        neo4j_password: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
     ):
         """初始化Codebase知識圖譜
+        # Initialize the Codebase Knowledge Graph
         
         Args:
             neo4j_uri: Neo4j資料庫URI，若為None則從環境變數取得
+            # neo4j_uri: Neo4j database URI, if None, get from environment variables
             neo4j_user: Neo4j使用者名稱，若為None則從環境變數取得
+            # neo4j_user: Neo4j username, if None, get from environment variables
             neo4j_password: Neo4j密碼，若為None則從環境變數取得
-            openai_api_key: OpenAI API金鑰，若為None則從環境變數取得
+            # neo4j_password: Neo4j password, if None, get from environment variables
         """
         self.neo4j_uri = neo4j_uri or os.environ.get("NEO4J_URI")
         self.neo4j_user = neo4j_user or os.environ.get("NEO4J_USER")
         self.neo4j_password = neo4j_password or os.environ.get("NEO4J_PASSWORD")
-        self.openai_api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
         
         # 初始化Neo4j資料庫
         self.db = Neo4jDatabase(
-            uri=self.neo4j_uri,
-            user=self.neo4j_user,
-            password=self.neo4j_password
+            uri=self.neo4j_uri or "",
+            user=self.neo4j_user or "",
+            password=self.neo4j_password or ""
         )
         
         # 初始化程式碼解析器
         self.parser = ASTParser()
         
         # 初始化嵌入處理器
-        self.embedder = OpenAIEmbeddings(api_key=self.openai_api_key)
+        # If an explicit API key is provided prefer the wrapper, otherwise use the factory
+        if openai_api_key:
+            self.embedder = OpenAIEmbeddings(api_key=openai_api_key)
+        else:
+            self.embedder = get_embedding_provider()
+
         self.code_embedder = CodeEmbedder(self.embedder)
     
     def process_codebase(self, codebase_path: str, clear_db: bool = False) -> Tuple[int, int]:
         """處理整個程式碼庫，解析並匯入知識圖譜
+        # Process the entire codebase, parse and import into the knowledge graph
         
         Args:
             codebase_path: 程式碼庫的目錄路徑
+            # codebase_path: Directory path of the codebase
             clear_db: 是否清空資料庫
+            # clear_db: Whether to clear the database
             
         Returns:
             處理的節點數量和關係數量
+            # Number of nodes and relationships processed
         """
         logger.info(f"開始處理程式碼庫: {codebase_path}")
+        # Start processing codebase
         
         # 驗證資料庫連接
+        # Verify database connection
         if not self.db.verify_connection():
             raise ConnectionError("無法連接到Neo4j資料庫，請檢查連接設定")
         
         # 清空資料庫（如果需要）
+        # Clear the database (if needed)
         if clear_db:
             logger.info("清空資料庫...")
             self.db.clear_database()
         
         # 建立資料庫結構
+        # Create database schema
         logger.info("創建資料庫結構...")
         self.db.create_schema_constraints()
         
         # 解析程式碼庫
+        # Parse the codebase
         logger.info("解析程式碼庫...")
         nodes, relations = self.parser.parse_directory(codebase_path)
         
         logger.info(f"共解析出 {len(nodes)} 個節點和 {len(relations)} 個關係")
+        # Total {len(nodes)} nodes and {len(relations)} relationships parsed
         
         # 為節點生成嵌入向量
+        # Generate embedding vectors for nodes
         logger.info("為節點生成嵌入向量...")
         self._generate_embeddings(nodes)
         
         # 將節點轉換為Neo4j格式並匯入資料庫
+        # Convert nodes to Neo4j format and import into the database
         logger.info("將節點匯入資料庫...")
         neo4j_nodes = self._convert_nodes_to_neo4j_format(nodes)
         self.db.batch_create_nodes(neo4j_nodes)
         
         # 將關係轉換為Neo4j格式並匯入資料庫
+        # Convert relationships to Neo4j format and import into the database
         logger.info("將關係匯入資料庫...")
         neo4j_relations = self._convert_relations_to_neo4j_format(relations)
         self.db.batch_create_relationships(neo4j_relations)
         
         # 創建向量索引（用於相似度搜索）
+        # Create vector index (for similarity search)
         logger.info("創建向量索引...")
         try:
             for node_label in ["Function", "Method", "Class", "File"]:
@@ -108,14 +131,17 @@ class CodebaseKnowledgeGraph:
                         index_name=f"{node_label.lower()}_vector_index",
                         node_label=node_label,
                         property_name="embedding",
-                        dimension=1536  # OpenAI嵌入的維度
+                        dimension=getattr(self.embedder, 'dimension', 1536)  # use configured provider dimension when available
                     )
                 except Exception as e:
                     logger.warning(f"創建 {node_label} 向量索引時出現警告: {e}")
+                    # Warning when creating {node_label} vector index: {e}
         except Exception as e:
             logger.error(f"創建向量索引時發生錯誤: {e}")
+            # Error creating vector index: {e}
         
         # 創建全文檢索索引
+        # Create full-text search index
         logger.info("創建全文檢索索引...")
         try:
             self.db.create_full_text_index(
@@ -125,17 +151,22 @@ class CodebaseKnowledgeGraph:
             )
         except Exception as e:
             logger.error(f"創建全文檢索索引時發生錯誤: {e}")
+            # Error creating full-text search index: {e}
         
         logger.info("程式碼庫處理完成！")
+        # Codebase processing complete!
         return len(nodes), len(relations)
     
     def _generate_embeddings(self, nodes: Dict[str, Any]) -> None:
         """為節點生成嵌入向量
+        # Generate embedding vectors for nodes
         
         Args:
             nodes: 節點字典
+            # nodes: Node dictionary
         """
         batch_size = 20  # 批次大小，避免API限制
+        # Batch size to avoid API limits
         
         # 僅為特定類型的節點生成嵌入
         target_types = ["Function", "Method", "Class", "File"]
@@ -149,14 +180,17 @@ class CodebaseKnowledgeGraph:
             batch = nodes_to_embed[i:i+batch_size]
             
             # 重置批次資料
+            # Reset batch data
             code_texts = []
             node_types = []
             names = []
             node_ids = []
             
             # 收集批次資料
+            # Collect batch data
             for node_id, node in batch:
                 # 對於檔案類型，使用檔案名稱作為代碼文本
+            # For file types, use the file name as the code text
                 if node.node_type == "File":
                     code_text = f"File: {node.name}"
                 else:
@@ -168,8 +202,10 @@ class CodebaseKnowledgeGraph:
                 node_ids.append(node_id)
             
             # 只在有資料要處理時才進行嵌入向量生成
+            # Only generate embeddings if there is data to process
             if code_texts:
                 # 批次生成嵌入向量
+                # Batch generate embedding vectors
                 embeddings = self.code_embedder.embed_code_nodes_batch(
                     code_texts=code_texts,
                     node_types=node_types,
@@ -177,35 +213,44 @@ class CodebaseKnowledgeGraph:
                 )
                 
                 # 確保嵌入向量與節點列表長度匹配
+                # Ensure embedding vector matches node list length
                 if len(embeddings) >= len(node_ids):
                     # 將嵌入向量添加到節點
+                    # Add embedding vector to node
                     for i, node_id in enumerate(node_ids):
                         nodes[node_id].properties["embedding"] = embeddings[i]
                     
                     logger.debug(f"已生成 {len(batch)} 個節點的嵌入向量")
+                    # Generated {len(batch)} node embeddings
                 else:
                     # 處理嵌入向量數量不足的情況
+                    # Handle cases where the number of embedding vectors is insufficient
                     logger.warning(f"嵌入向量數量({len(embeddings)})小於節點數量({len(node_ids)})，使用零向量代替")
                     for i, node_id in enumerate(node_ids):
                         if i < len(embeddings):
                             nodes[node_id].properties["embedding"] = embeddings[i]
                         else:
                             # 使用零向量代替
-                            nodes[node_id].properties["embedding"] = [0.0] * 1536
+                            # Use zero vectors as a substitute
+                            nodes[node_id].properties["embedding"] = [0.0] * getattr(self.embedder, 'dimension', 1536)
     
     def _convert_nodes_to_neo4j_format(self, nodes: Dict[str, Any]) -> List[Dict[str, Any]]:
         """將節點轉換為Neo4j批量匯入的格式
+        # Convert nodes to Neo4j bulk import format
         
         Args:
             nodes: 節點字典
+            # nodes: Node dictionary
             
         Returns:
             Neo4j格式的節點列表
+            # List of nodes in Neo4j format
         """
         neo4j_nodes = []
         
         for node_id, node in nodes.items():
             # 創建基本屬性
+            # Create basic properties
             properties = {
                 "id": node_id,
                 "name": node.name,
@@ -214,6 +259,7 @@ class CodebaseKnowledgeGraph:
             }
             
             # 添加節點類型特定的屬性
+            # Add node type specific properties
             if node.end_line_no:
                 properties["end_line_no"] = node.end_line_no
             
@@ -221,25 +267,32 @@ class CodebaseKnowledgeGraph:
                 properties["code_snippet"] = node.code_snippet
             
             # 添加嵌入向量（如果有）
+            # Add embedding vector (if any)
             if "embedding" in node.properties:
                 properties["embedding"] = node.properties["embedding"]
             
             # 合併其他屬性，確保所有屬性都是Neo4j兼容的原始類型
+            # Merge other properties, ensuring all properties are Neo4j compatible primitive types
             for key, value in node.properties.items():
                 if key != "embedding":  # 跳過已處理的嵌入向量
+                    # Skip already processed embedding vectors
                     # 檢查屬性值類型，確保是Neo4j支持的原始類型或其數組
+                    # Check property value type, ensure it's a Neo4j-supported primitive type or array thereof
                     if isinstance(value, (str, int, float, bool)) or (
                         isinstance(value, list) and all(isinstance(item, (int, float)) for item in value)
                     ):
                         properties[key] = value
                     else:
                         # 如果不是原始類型，嘗試使用JSON序列化
+                        # If not a primitive type, try to use JSON serialization
                         try:
                             properties[key] = json.dumps(value)
                         except (TypeError, ValueError) as e:
                             logger.warning(f"無法序列化屬性 {key}，跳過: {e}")
+                            # Could not serialize property {key}, skipping: {e}
             
             # 添加節點標籤
+            # Add node labels
             labels = ["Base", node.node_type]
             
             neo4j_nodes.append({
@@ -330,7 +383,7 @@ def main():
             logger.info("開始啟動MCP服務器...")
             
             # 導入MCP服務器模組
-            from mcp.server import CodebaseKnowledgeGraphMCP
+            from src.mcp.server import CodebaseKnowledgeGraphMCP
             
             # 創建並啟動MCP服務器
             server = CodebaseKnowledgeGraphMCP(
@@ -347,4 +400,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

@@ -45,13 +45,14 @@ def run_test():
         # 配置 Mock Embedder
         mock_embedder_instance = MockOpenAIEmbeddings.return_value
         mock_code_embedder_instance = MockCodeEmbedder.return_value
-        # 模擬返回固定維度的零向量 - 增加數量以覆蓋所有節點
-        mock_code_embedder_instance.embed_code_nodes_batch.return_value = [[0.0] * 1536] * 30 # 提供足夠多的嵌入向量
+        # 模擬返回固定維度的零向量 - 使用 OpenAIEmbeddings wrapper default dimension
+        default_dim = getattr(mock_embedder_instance, 'dimension', 1536)
+        mock_code_embedder_instance.embed_code_nodes_batch.return_value = [[0.0] * default_dim] * 30 # 提供足夠多的嵌入向量
 
         kg = None
         try:
             # 初始化 CodebaseKnowledgeGraph (使用 Mock 物件)
-            kg = CodebaseKnowledgeGraph()
+            kg = CodebaseKnowledgeGraph(openai_api_key="mock_key")
             print("- 成功: 初始化 CodebaseKnowledgeGraph")
             
             # 執行處理流程
@@ -75,6 +76,13 @@ def run_test():
             print("- 成功: 創建向量索引已呼叫")
             mock_db_instance.create_full_text_index.assert_called_once()
             print("- 成功: 創建全文索引已呼叫")
+
+            # Ensure create_vector_index was called with the provider's dimension
+            found_dim_call = any(
+                call.kwargs.get('dimension') == default_dim if hasattr(call, 'kwargs') else False
+                for call in mock_db_instance.create_vector_index.call_args_list
+            )
+            assert found_dim_call, f"create_vector_index was not called with dimension={default_dim}"
             
             # 驗證返回的節點和關係數量是否合理 (基於 example_codebase)
             # 注意：實際數量取決於 ASTParser 的實現

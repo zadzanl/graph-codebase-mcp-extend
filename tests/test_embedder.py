@@ -1,92 +1,87 @@
 import os
 import sys
+import types
+import pytest
 import dotenv
 
-# 將專案根目錄加入 Python 路徑
+# Ensure project root is importable
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 dotenv.load_dotenv()
 
-from src.embeddings.embedder import OpenAIEmbeddings, CodeEmbedder
+from src.embeddings.openai_compatible import OpenAICompatibleProvider  # noqa: E402
+from src.embeddings.embedder import CodeEmbedder, OpenAIEmbeddings  # noqa: E402
 
-# 從環境變數讀取 API Key，如果沒有則設為 None
-API_KEY = os.environ.get("OPENAI_API_KEY")
 
-def run_test():
-    print("--- 開始測試 Embeddings 處理器 ---")
+@pytest.mark.parametrize(
+    "model,base_url,expected_dim",
+    [
+        ("text-embedding-3-small", "https://api.openai.com/v1", 1536),
+        ("Qwen/Qwen3-Embedding-0.6B", "https://api.deepinfra.com/v1/openai", 1024),
+        ("google/embeddinggemma-300m", "https://api.deepinfra.com/v1/openai", 768),
+        ("text-embedding-004", "https://generativelanguage.googleapis.com/v1beta/openai/", 768),
+        ("gemini-embedding-001", "https://generativelanguage.googleapis.com/v1beta/openai/", 3072),
+    ],
+)
+def test_openai_compatible_provider_basic_behavior(model, base_url, expected_dim):
+    """Verify that the provider sends the expected request fields and returns
+    vectors with the documented dimensionality (or the configured dimensionality).
+    """
 
-    # 只有在提供 API Key 時才執行實際的嵌入測試
-    if not API_KEY:
-        print("[跳過] 未提供 OPENAI_API_KEY 環境變數，跳過實際的嵌入測試")
-        try:
-            # 測試初始化時是否正確拋出錯誤
-            OpenAIEmbeddings(api_key=None)
-            print("[失敗] 未提供 API Key 時，OpenAIEmbeddings 初始化未引發 ValueError")
-        except ValueError:
-            print("- 成功: 未提供 API Key 時，OpenAIEmbeddings 初始化正確引發 ValueError")
-            print("[警告] Embeddings 處理器測試未完全執行 (缺少 API Key)")
-        except Exception as e:
-             print(f"[失敗] 測試初始化錯誤時發生意外錯誤: {e}")
-        print("--- 結束測試 Embeddings 處理器 ---")
-        return
+    provider = OpenAICompatibleProvider(api_key="test_key", base_url=base_url, model=model, api_key_name="TEST_KEY")
 
-    try:
-        openai_embedder = OpenAIEmbeddings(api_key=API_KEY)
-        code_embedder = CodeEmbedder(openai_embedder)
-        
-        # 測試單個文本嵌入
-        sample_text = "This is a sample text for embedding."
-        embedding = openai_embedder.embed_text(sample_text)
-        if not embedding or len(embedding) != 1536: # text-embedding-3-small 維度
-            print(f"[失敗] 單個文本嵌入失敗或維度錯誤: 維度 {len(embedding) if embedding else 'None'}")
-        else:
-            print("- 成功: 單個文本嵌入完成，維度正確")
+    # Replace the real HTTP client with a lightweight mock that records kwargs
+    recorded = {}
 
-        # 測試批量文本嵌入
-        sample_texts = ["First text", "", "Third text"]
-        batch_embeddings = openai_embedder.embed_batch(sample_texts)
-        if len(batch_embeddings) != len(sample_texts):
-            print("[失敗] 批量文本嵌入返回數量錯誤")
-        elif len(batch_embeddings[0]) != 1536 or len(batch_embeddings[2]) != 1536:
-             print("[失敗] 批量文本嵌入向量維度錯誤")
-        elif not all(v == 0.0 for v in batch_embeddings[1]): # 檢查空字串的嵌入是否為零向量
-            print("[失敗] 批量文本嵌入中空字串未返回零向量")
-        else:
-            print("- 成功: 批量文本嵌入完成，維度正確，空字串處理正確")
-        
-        # 測試單個程式碼嵌入
-        sample_code = "def greet(name):\n  print(f\"Hello, {name}!\")"
-        code_embedding = code_embedder.embed_code_node(
-            code_text=sample_code,
-            node_type="Function",
-            name="greet"
-        )
-        if not code_embedding or len(code_embedding) != 1536:
-            print(f"[失敗] 單個程式碼嵌入失敗或維度錯誤: 維度 {len(code_embedding) if code_embedding else 'None'}")
-        else:
-            print("- 成功: 單個程式碼嵌入完成，維度正確")
-            
-        # 測試批量程式碼嵌入
-        sample_codes = [sample_code, "class MyClass:\n  pass"]
-        node_types = ["Function", "Class"]
-        names = ["greet", "MyClass"]
-        batch_code_embeddings = code_embedder.embed_code_nodes_batch(
-            code_texts=sample_codes,
-            node_types=node_types,
-            names=names
-        )
-        if len(batch_code_embeddings) != len(sample_codes):
-            print("[失敗] 批量程式碼嵌入返回數量錯誤")
-        elif any(len(emb) != 1536 for emb in batch_code_embeddings):
-            print("[失敗] 批量程式碼嵌入向量維度錯誤")
-        else:
-            print("- 成功: 批量程式碼嵌入完成，維度正確")
+    def create_side_effect(*args, **kwargs):
+        # record the last kwargs so we can assert on them
+        recorded.update(kwargs)
+        inp = kwargs.get("input") or []
+        if isinstance(inp, str):
+            return types.SimpleNamespace(data=[types.SimpleNamespace(embedding=[0.1] * expected_dim, index=0)], usage=types.SimpleNamespace(prompt_tokens=1))
 
-        print("[成功] Embeddings 處理器測試通過")
+        # batch case: return a matching embedding per (filtered) input
+        data = []
+        for i, item in enumerate(inp):
+            data.append(types.SimpleNamespace(index=i, embedding=[0.1 * (i + 1)] * expected_dim))
+        return types.SimpleNamespace(data=data)
 
-    except Exception as e:
-        print(f"[失敗] Embeddings 處理器測試中發生錯誤: {e}")
+    # assign mock client bypassing static type checks
+    object.__setattr__(provider, "client", types.SimpleNamespace(embeddings=types.SimpleNamespace(create=create_side_effect)))
 
-    print("--- 結束測試 Embeddings 處理器 ---")
+    # Single text embedding
+    emb = provider.embed_text("Hello world")
+    assert isinstance(emb, list)
+    assert len(emb) == expected_dim
+    assert recorded.get("model") == model
+    assert recorded.get("encoding_format") == "float"
 
-if __name__ == "__main__":
-    run_test() 
+    # Batch embeddings should preserve input order and produce zero-vectors for empty strings
+    recorded.clear()
+    inputs = ["First text", "", "Third text"]
+    batch = provider.embed_batch(inputs)
+    assert len(batch) == len(inputs)
+    assert len(batch[0]) == expected_dim
+    assert len(batch[2]) == expected_dim
+    # the empty string should be mapped to a zero-vector of the provider's dimension
+    assert len(batch[1]) == expected_dim
+    assert all(v == 0.0 for v in batch[1])
+    assert recorded.get("model") == model
+    assert recorded.get("encoding_format") == "float"
+
+    # Ensure CodeEmbedder uses the provider and returns consistent dimensions
+    code_embedder = CodeEmbedder(provider)
+    code_emb = code_embedder.embed_code_node("def f(): pass", "Function", "f")
+    assert isinstance(code_emb, list)
+    assert len(code_emb) == expected_dim
+
+    batch_codes = ["def f(): pass", "class C: pass"]
+    node_types = ["Function", "Class"]
+    names = ["f", "C"]
+    code_batch = code_embedder.embed_code_nodes_batch(batch_codes, node_types, names)
+    assert len(code_batch) == 2
+    assert all(len(x) == expected_dim for x in code_batch)
+
+
+def test_openai_embeddings_wrapper_requires_api_key():
+    with pytest.raises(ValueError):
+        OpenAIEmbeddings(api_key="")

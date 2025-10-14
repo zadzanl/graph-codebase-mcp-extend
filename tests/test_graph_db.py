@@ -7,7 +7,7 @@ import dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 dotenv.load_dotenv()
 
-from src.neo4j.graph_db import Neo4jDatabase
+from src.neo4j_storage.graph_db import Neo4jDatabase
 
 def run_test():
     print("--- 開始測試 Neo4j 資料庫操作 ---")

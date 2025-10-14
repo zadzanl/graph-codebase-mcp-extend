@@ -39,7 +39,9 @@ async def run_test():
         mock_db_instance.execute_cypher = AsyncMock(return_value=[{"result": "mock_cypher_data"}])
 
         # 模擬 Embedder 返回值
-        mock_embedder_instance.embed_text = MagicMock(return_value=[0.1] * 1536)
+        # Configure embedder mock to return a vector with the wrapper's default dimension
+        default_dim = getattr(MockOpenAIEmbeddings.return_value, 'dimension', 1536)
+        mock_embedder_instance.embed_text = MagicMock(return_value=[0.1] * default_dim)
 
         # 配置 FastMCP Mock - 讓 .tool() 返回一個簡單的裝飾器，它什麼都不做
         def mock_tool_decorator(*args, **kwargs):

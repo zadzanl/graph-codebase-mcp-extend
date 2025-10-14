@@ -5,6 +5,8 @@ Instructions for AI coding assistants using OpenSpec for spec-driven development
 
 ## TL;DR Quick Checklist
 
+- You must write comment in English. Translate any comments you found into english in a new line. Do not delete the old chinese comments.
+- This development environtment is running on a virtual environment (venv). Whenever youre running tests or commands via terminal, you must correctly path to use the venv's python.exe
 - Search existing work: `openspec spec list --long`, `openspec list` (use `rg` only for full-text search)
 - Decide scope: new capability vs modify existing capability
 - Pick a unique `change-id`: kebab-case, verb-led (`add-`, `update-`, `remove-`, `refactor-`)

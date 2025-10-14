@@ -174,6 +174,18 @@ MIT License
 - [Neo4j Python Driver Documentation](https://neo4j.com/docs/api/python-driver/)
 - [Python AST Module Documentation](https://docs.python.org/3/library/ast.html)
 
+## Embedding Provider Configuration
+
+You can configure the embedding provider by setting the following environment variables:
+
+- `EMBEDDING_PROVIDER`: The provider to use. Supported values are `openai` (default), `google`, `deepinfra`, or `generic`.
+- `EMBEDDING_MODEL`: The name of the embedding model to use (e.g., `text-embedding-3-small`).
+- `OPENAI_API_KEY`: Your OpenAI API key.
+- `GEMINI_API_KEY`: Your Google Gemini API key.
+- `DEEPINFRA_API_KEY`: Your DeepInfra API key.
+- `EMBEDDING_API_KEY`: Your API key for a generic provider.
+- `EMBEDDING_API_BASE_URL`: The base URL for a generic provider.
+
 ---
 
 
