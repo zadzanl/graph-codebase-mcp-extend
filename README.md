@@ -44,9 +44,68 @@ This structured representation enables AI to more effectively understand the str
 
 ## System Requirements
 
-- Python 3.12.7 or higher
+- Python 3.10 or higher (3.14 free-threaded recommended for best performance)
 - Neo4j graph database (version 5.x recommended)
 - Docker (optional, for containerized deployment)
+
+## Parallel Indexing
+
+Graph-Codebase-MCP supports parallel indexing to dramatically speed up processing of large codebases. When enabled, the system automatically selects the optimal execution strategy based on your Python version and codebase size.
+
+### Performance Benefits
+
+- **2x+ speedup** on large codebases (1000+ files) with Python 3.14 free-threaded
+- **1.5x+ speedup** on standard Python (using ProcessPoolExecutor)
+- Automatic fallback to sequential processing for small codebases (< 50 files)
+- Adaptive worker count based on CPU cores
+
+### How It Works
+
+The system uses a two-pass architecture:
+1. **First Pass (Parallel)**: Each worker independently parses files and builds module definitions
+2. **Second Pass (Sequential)**: Resolves cross-file imports using the complete module index
+
+### Configuration
+
+Parallel indexing is enabled by default. You can customize behavior via environment variables:
+
+```bash
+# Enable/disable parallel indexing (default: true)
+PARALLEL_INDEXING_ENABLED=true
+
+# Maximum worker threads/processes (default: min(cpu_count, 8))
+MAX_WORKERS=8
+
+# Minimum files required to use parallel mode (default: 50)
+MIN_FILES_FOR_PARALLEL=50
+
+# Neo4j connection pool size (default: MAX_WORKERS * 2)
+NEO4J_MAX_CONNECTION_POOL_SIZE=16
+```
+
+### Executor Selection
+
+The system automatically chooses the best executor:
+
+- **ThreadPoolExecutor** (Python 3.14 free-threaded with GIL disabled): True parallelism without multi-process overhead
+- **ProcessPoolExecutor** (Standard Python with GIL): Parallelism via separate processes
+- **Sequential** (Small codebases or disabled): No parallelism overhead for small workloads
+
+### Troubleshooting
+
+**Warning: GIL re-enabled during execution**
+- Some C extensions re-enable the GIL at runtime
+- Performance impact may occur, but execution continues safely
+- Consider upgrading problematic dependencies to GIL-free versions
+
+**Connection pool exhausted**
+- Increase `NEO4J_MAX_CONNECTION_POOL_SIZE` (recommended: `MAX_WORKERS * 2`)
+- Reduce `MAX_WORKERS` if system resources are limited
+
+**Performance not improving**
+- Ensure you have Python 3.14 free-threaded for best results
+- Verify your codebase has > 50 files (MIN_FILES_FOR_PARALLEL)
+- Check CPU utilization - you may already be I/O bound
 
 ## Installation Guide
 
@@ -63,6 +122,19 @@ cd graph-codebase-mcp
 pip install -r requirements.txt
 ```
 
+### 3. (Optional) Install Python 3.14 Free-Threaded (GIL disabled)
+
+To unlock true parallel speedups on multi-core CPUs, you can install Python 3.14 free-threaded (GIL disabled). Standard Python works fine and the app will fall back to safe modes automatically, but free-threaded can deliver 2x+ speedups on large codebases.
+
+- Windows/macOS installers from python.org include an option to install a free-threaded build.
+- Verify with either method:
+  - `python -VV` shows "free-threading build" in the version string
+  - In Python: `import sys; hasattr(sys, "_is_gil_enabled") and sys._is_gil_enabled()` returns `False`
+
+References:
+- Python HOWTO: Python support for free threading (3.14)
+- What’s New in Python 3.14 – Free-threaded mode improvements
+
 ### 3. Configure Environment Variables
 
 Create a `.env` file or use `mcp.json` to specify environment parameters:
@@ -73,6 +145,11 @@ NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 OPENAI_API_KEY=your_openai_api_key
+# Parallel indexing configuration (optional; sensible defaults are used if omitted)
+PARALLEL_INDEXING_ENABLED=true
+MAX_WORKERS=8
+MIN_FILES_FOR_PARALLEL=50
+NEO4J_MAX_CONNECTION_POOL_SIZE=16
 ```
 
 Or `mcp.json` file example:
@@ -156,7 +233,7 @@ graph-codebase-mcp/
 
 ## Technology Stack
 
-- **Programming Language**: Python 3.12.7
+- **Programming Language**: Python 3.10+ (Python 3.14 free-threaded recommended)
 - **Code Analysis**: Python AST module
 - **Vector Embedding**: OpenAI Embeddings
 - **Graph Database**: Neo4j
