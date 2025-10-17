@@ -9,34 +9,77 @@ logger = logging.getLogger(__name__)
 
 
 class Neo4jDatabase:
-    """Neo4j圖形資料庫操作類"""
+    """Neo4j圖形資料庫操作類 / Neo4j graph database operations class"""
     
     def __init__(
         self,
         uri: str = None,
         user: str = None,
         password: str = None,
-        database: str = "neo4j"
+        database: str = "neo4j",
+        max_connection_pool_size: Optional[int] = None,
     ):
-        """初始化Neo4j資料庫連接
+        """初始化Neo4j資料庫連接 / Initialize Neo4j database connection
         
         Args:
             uri: Neo4j資料庫URI，若為None則從環境變數NEO4J_URI取得
+                 / Neo4j database URI, if None get from NEO4J_URI environment variable
             user: 使用者名稱，若為None則從環境變數NEO4J_USER取得
+                  / Username, if None get from NEO4J_USER environment variable
             password: 密碼，若為None則從環境變數NEO4J_PASSWORD取得
+                     / Password, if None get from NEO4J_PASSWORD environment variable
             database: 資料庫名稱，預設為"neo4j"
+                     / Database name, default is "neo4j"
+            max_connection_pool_size: 最大連線池大小，若為None則從環境變數取得或使用預設值
+                                     / Max connection pool size, if None get from env or use default
         """
         self.uri = uri or os.environ.get("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.environ.get("NEO4J_USER", "neo4j")
         self.password = password or os.environ.get("NEO4J_PASSWORD", "password")
         self.database = database
+        
+        # Configure connection pool size for parallel operations
+        # 為平行操作配置連線池大小
+        if max_connection_pool_size is None:
+            # Try to get from environment, otherwise calculate based on MAX_WORKERS
+            env_pool_size = os.environ.get("NEO4J_MAX_CONNECTION_POOL_SIZE")
+            if env_pool_size:
+                try:
+                    max_connection_pool_size = int(env_pool_size)
+                except ValueError:
+                    logger.warning(
+                        f"Invalid NEO4J_MAX_CONNECTION_POOL_SIZE: {env_pool_size}, "
+                        "using default calculation"
+                    )
+            
+            if max_connection_pool_size is None:
+                # Default: MAX_WORKERS * 2, or at least 16
+                max_workers = int(os.environ.get("MAX_WORKERS", "8"))
+                max_connection_pool_size = max(16, max_workers * 2)
+        
+        self.max_connection_pool_size = max_connection_pool_size
         self.driver = None
         
         try:
-            self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            logger.info(f"已成功連接到Neo4j資料庫: {self.uri}")
+            # Create driver with connection pool configuration
+            # Driver is thread-safe and should be shared across threads
+            # 創建具有連線池配置的驅動程式
+            # Driver 是執行緒安全的，應在執行緒之間共享
+            self.driver = GraphDatabase.driver(
+                self.uri,
+                auth=(self.user, self.password),
+                max_connection_pool_size=self.max_connection_pool_size,
+                connection_acquisition_timeout=30.0,  # 30 seconds timeout
+                connection_timeout=30.0,
+            )
+            logger.info(
+                f"已成功連接到Neo4j資料庫 / Successfully connected to Neo4j: {self.uri}"
+            )
+            logger.info(
+                f"連線池大小 / Connection pool size: {self.max_connection_pool_size}"
+            )
         except Exception as e:
-            logger.error(f"連接Neo4j資料庫時發生錯誤: {e}")
+            logger.error(f"連接Neo4j資料庫時發生錯誤 / Error connecting to Neo4j: {e}")
             raise
     
     def close(self):
@@ -46,18 +89,44 @@ class Neo4jDatabase:
             logger.info("已關閉Neo4j資料庫連接")
     
     def verify_connection(self) -> bool:
-        """驗證資料庫連接是否有效
+        """驗證資料庫連接是否有效 / Verify database connection is valid
         
         Returns:
-            連接是否有效
+            連接是否有效 / Whether the connection is valid
         """
         try:
             with self.driver.session(database=self.database) as session:
                 result = session.run("RETURN 1 as n").single()
                 return result and result.get("n") == 1
         except Exception as e:
-            logger.error(f"驗證Neo4j連接時發生錯誤: {e}")
+            logger.error(f"驗證Neo4j連接時發生錯誤 / Error verifying Neo4j connection: {e}")
             return False
+    
+    def get_session(self):
+        """
+        Create a new thread-safe session for database operations.
+        
+        IMPORTANT FOR PARALLEL PROCESSING:
+        - The Driver instance is thread-safe and should be shared across threads
+        - Session instances are NOT thread-safe and must not be shared
+        - Each worker thread/process must create its own session
+        - Always use sessions within a context manager (with statement)
+        
+        重要提示（用於平行處理）:
+        - Driver 實例是執行緒安全的，應在執行緒之間共享
+        - Session 實例不是執行緒安全的，不得共享
+        - 每個工作執行緒/程序必須創建自己的 session
+        - 始終在上下文管理器（with 語句）中使用 session
+        
+        Returns:
+            A new Neo4j session (use with context manager)
+        
+        Example:
+            >>> db = Neo4jDatabase()
+            >>> with db.get_session() as session:
+            ...     session.run("CREATE (n:Node {id: $id})", id=1)
+        """
+        return self.driver.session(database=self.database)
     
     def clear_database(self):
         """清空資料庫中的所有節點和關係"""

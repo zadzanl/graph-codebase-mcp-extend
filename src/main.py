@@ -1,14 +1,18 @@
 import os
 import argparse
 import logging
+import time
 from typing import Dict, List, Any, Tuple, Optional
 from dotenv import load_dotenv
 import json
+from concurrent.futures import as_completed
 
 from src.ast_parser.parser import ASTParser
 from src.embeddings.factory import get_embedding_provider
 from src.embeddings.embedder import CodeEmbedder, OpenAIEmbeddings
 from src.neo4j_storage.graph_db import Neo4jDatabase
+from src.parallel.pool_manager import get_processing_pool
+from src.utils.runtime_detection import log_runtime_info
 
 load_dotenv()
 
@@ -44,11 +48,16 @@ class CodebaseKnowledgeGraph:
         self.neo4j_user = neo4j_user or os.environ.get("NEO4J_USER")
         self.neo4j_password = neo4j_password or os.environ.get("NEO4J_PASSWORD")
         
-        # 初始化Neo4j資料庫
+        # Validate configuration
+        self._validate_configuration()
+        
+        # Initialize Neo4j database connection with connection pooling
+        max_pool_size = self._get_neo4j_pool_size()
         self.db = Neo4jDatabase(
             uri=self.neo4j_uri or "",
             user=self.neo4j_user or "",
-            password=self.neo4j_password or ""
+            password=self.neo4j_password or "",
+            max_connection_pool_size=max_pool_size
         )
         
         # 初始化程式碼解析器
@@ -62,6 +71,83 @@ class CodebaseKnowledgeGraph:
             self.embedder = get_embedding_provider()
 
         self.code_embedder = CodeEmbedder(self.embedder)
+    
+    def _validate_configuration(self) -> None:
+        """驗證配置參數
+        # Validate configuration parameters
+        """
+        # Validate MAX_WORKERS
+        max_workers_str = os.getenv("MAX_WORKERS", "")
+        if max_workers_str:
+            try:
+                max_workers = int(max_workers_str)
+                if max_workers <= 0:
+                    logger.warning(f"MAX_WORKERS 必須大於 0，當前值: {max_workers}. 將使用默認值")
+                    # MAX_WORKERS must be greater than 0, current value: {max_workers}. Will use default
+                elif max_workers > 128:
+                    logger.warning(f"MAX_WORKERS 過大 ({max_workers}). 建議使用 <= 128. 可能導致資源耗盡")
+                    # MAX_WORKERS too large ({max_workers}). Recommend <= 128. May cause resource exhaustion
+            except ValueError:
+                logger.warning(f"MAX_WORKERS 值無效: '{max_workers_str}'. 將使用默認值")
+                # Invalid MAX_WORKERS value: '{max_workers_str}'. Will use default
+        
+        # Validate NEO4J_MAX_CONNECTION_POOL_SIZE
+        from src.utils.runtime_detection import get_optimal_worker_count
+        optimal_workers = get_optimal_worker_count()
+        
+        pool_size_str = os.getenv("NEO4J_MAX_CONNECTION_POOL_SIZE", "")
+        if pool_size_str:
+            try:
+                pool_size = int(pool_size_str)
+                if pool_size < optimal_workers:
+                    logger.warning(
+                        f"NEO4J_MAX_CONNECTION_POOL_SIZE ({pool_size}) 小於 MAX_WORKERS ({optimal_workers}). "
+                        f"建議設置為至少 {optimal_workers * 2} 以避免連接池耗盡"
+                    )
+                    # NEO4J_MAX_CONNECTION_POOL_SIZE ({pool_size}) less than MAX_WORKERS ({optimal_workers}).
+                    # Recommend setting to at least {optimal_workers * 2} to avoid connection pool exhaustion
+            except ValueError:
+                logger.warning(f"NEO4J_MAX_CONNECTION_POOL_SIZE 值無效: '{pool_size_str}'")
+                # Invalid NEO4J_MAX_CONNECTION_POOL_SIZE value: '{pool_size_str}'
+        
+        # Validate MIN_FILES_FOR_PARALLEL
+        min_files_str = os.getenv("MIN_FILES_FOR_PARALLEL", "")
+        if min_files_str:
+            try:
+                min_files = int(min_files_str)
+                if min_files < 1:
+                    logger.warning(f"MIN_FILES_FOR_PARALLEL 必須至少為 1，當前值: {min_files}")
+                    # MIN_FILES_FOR_PARALLEL must be at least 1, current value: {min_files}
+                elif min_files < 10:
+                    logger.info(f"MIN_FILES_FOR_PARALLEL ({min_files}) 較小. 並行處理可能不會帶來性能提升")
+                    # MIN_FILES_FOR_PARALLEL ({min_files}) is small. Parallel processing may not bring performance gains
+            except ValueError:
+                logger.warning(f"MIN_FILES_FOR_PARALLEL 值無效: '{min_files_str}'")
+                # Invalid MIN_FILES_FOR_PARALLEL value: '{min_files_str}'
+    
+    def _get_neo4j_pool_size(self) -> int:
+        """獲取 Neo4j 連接池大小
+        # Get Neo4j connection pool size
+        
+        Returns:
+            連接池大小
+            # Connection pool size
+        """
+        from src.utils.runtime_detection import get_optimal_worker_count
+        
+        pool_size_str = os.getenv("NEO4J_MAX_CONNECTION_POOL_SIZE", "")
+        if pool_size_str:
+            try:
+                return int(pool_size_str)
+            except ValueError:
+                pass
+        
+        # Default: MAX_WORKERS * 2, minimum 16
+        optimal_workers = get_optimal_worker_count()
+        default_size = max(optimal_workers * 2, 16)
+        logger.info(f"使用默認 Neo4j 連接池大小: {default_size}")
+        # Using default Neo4j connection pool size: {default_size}
+        return default_size
     
     def process_codebase(self, codebase_path: str, clear_db: bool = False) -> Tuple[int, int]:
         """處理整個程式碼庫，解析並匯入知識圖譜
@@ -77,8 +163,12 @@ class CodebaseKnowledgeGraph:
             處理的節點數量和關係數量
             # Number of nodes and relationships processed
         """
+        start_time = time.time()
         logger.info(f"開始處理程式碼庫: {codebase_path}")
         # Start processing codebase
+        
+        # Log runtime information (GIL status, Python version, etc.)
+        log_runtime_info()
         
         # 驗證資料庫連接
         # Verify database connection
@@ -96,10 +186,26 @@ class CodebaseKnowledgeGraph:
         logger.info("創建資料庫結構...")
         self.db.create_schema_constraints()
         
-        # 解析程式碼庫
-        # Parse the codebase
-        logger.info("解析程式碼庫...")
-        nodes, relations = self.parser.parse_directory(codebase_path)
+        # Collect all Python files
+        python_files = self._collect_python_files(codebase_path)
+        logger.info(f"找到 {len(python_files)} 個 Python 檔案")
+        # Found {len(python_files)} Python files
+        
+        # Get configuration for parallel processing
+        parallel_enabled = os.getenv("PARALLEL_INDEXING_ENABLED", "true").lower() == "true"
+        min_files_for_parallel = int(os.getenv("MIN_FILES_FOR_PARALLEL", "50"))
+        
+        # Determine if we should use parallel processing
+        use_parallel = parallel_enabled and len(python_files) >= min_files_for_parallel
+        
+        if use_parallel:
+            logger.info(f"使用並行處理模式處理 {len(python_files)} 個檔案")
+            # Use parallel processing mode to process {len(python_files)} files
+            nodes, relations = self._process_files_parallel(python_files, codebase_path)
+        else:
+            logger.info(f"使用順序處理模式處理 {len(python_files)} 個檔案")
+            # Use sequential processing mode to process {len(python_files)} files
+            nodes, relations = self.parser.parse_directory(codebase_path)
         
         logger.info(f"共解析出 {len(nodes)} 個節點和 {len(relations)} 個關係")
         # Total {len(nodes)} nodes and {len(relations)} relationships parsed
@@ -153,9 +259,149 @@ class CodebaseKnowledgeGraph:
             logger.error(f"創建全文檢索索引時發生錯誤: {e}")
             # Error creating full-text search index: {e}
         
-        logger.info("程式碼庫處理完成！")
-        # Codebase processing complete!
+        elapsed_time = time.time() - start_time
+        logger.info(f"程式碼庫處理完成！耗時: {elapsed_time:.2f} 秒 (並行模式: {use_parallel})")
+        # Codebase processing complete! Time taken: {elapsed_time:.2f} seconds (Parallel mode: {use_parallel})
         return len(nodes), len(relations)
+    
+    def _collect_python_files(self, directory_path: str) -> List[str]:
+        """收集目錄中的所有 Python 檔案
+        # Collect all Python files in the directory
+        
+        Args:
+            directory_path: 目錄路徑
+            # directory_path: Directory path
+            
+        Returns:
+            Python 檔案路徑列表
+            # List of Python file paths
+        """
+        python_files = []
+        for root, _, files in os.walk(directory_path):
+            for file_name in files:
+                if file_name.endswith(".py"):
+                    file_path = os.path.join(root, file_name)
+                    python_files.append(file_path)
+        return python_files
+    
+    def _process_files_parallel(self, python_files: List[str], codebase_path: str) -> Tuple[Dict[str, Any], List[Any]]:
+        """使用並行處理模式處理 Python 檔案
+        # Process Python files using parallel processing mode
+        
+        Args:
+            python_files: Python 檔案路徑列表
+            # python_files: List of Python file paths
+            codebase_path: 程式碼庫目錄路徑
+            # codebase_path: Codebase directory path
+            
+        Returns:
+            節點字典和關係列表
+            # Node dictionary and relationship list
+        """
+        from src.ast_parser.parser import ASTParser
+        
+        try:
+            # First pass: Parse all files in parallel to build module definition index
+            logger.info("第一遍: 並行解析所有檔案...")
+            # First pass: Parse all files in parallel...
+            
+            # Create a shared parser for collecting results
+            # Each worker will create its own parser instance
+            all_nodes = {}
+            all_module_definitions = {}
+            all_pending_imports = []
+            all_module_to_file = {}
+            
+            def parse_file_worker(file_path: str) -> Tuple[Dict, Dict, List, Dict]:
+                """Worker function to parse a single file
+                
+                Args:
+                    file_path: Path to the Python file
+                    
+                Returns:
+                    Tuple of (nodes, module_definitions, pending_imports, module_to_file)
+                """
+                try:
+                    # Create a dedicated parser for this file
+                    parser = ASTParser()
+                    parser.parse_file(file_path, build_index=True)
+                    
+                    return (
+                        dict(parser.nodes),
+                        dict(parser.module_definitions),
+                        list(parser.pending_imports),
+                        dict(parser.module_to_file)
+                    )
+                except Exception as e:
+                    logger.error(f"解析檔案 {file_path} 時發生錯誤: {e}")
+                    # Error parsing file {file_path}: {e}
+                    return ({}, {}, [], {})
+            
+            # Use the processing pool manager to process files in parallel
+            with get_processing_pool() as pool:
+                # Submit all file parsing tasks
+                futures = [pool.submit(parse_file_worker, file_path) for file_path in python_files]
+                
+                # Filter out None values (though submit() should always return a Future)
+                futures = [f for f in futures if f is not None]
+                
+                # Collect results as they complete
+                completed = 0
+                for future in as_completed(futures):
+                    try:
+                        nodes, module_defs, pending, module_files = future.result()
+                        
+                        # Merge results
+                        all_nodes.update(nodes)
+                        all_module_definitions.update(module_defs)
+                        all_pending_imports.extend(pending)
+                        all_module_to_file.update(module_files)
+                        
+                        completed += 1
+                        if completed % 10 == 0:
+                            logger.info(f"已完成 {completed}/{len(python_files)} 個檔案")
+                            # Completed {completed}/{len(python_files)} files
+                    except Exception as e:
+                        logger.error(f"處理檔案結果時發生錯誤: {e}")
+                        # Error processing file result: {e}
+            
+            logger.info(f"第一遍完成: 解析了 {len(all_nodes)} 個節點")
+            # First pass complete: Parsed {len(all_nodes)} nodes
+            
+            # Second pass: Process pending imports sequentially
+            # This must be sequential because it requires the complete module definition index
+            logger.info("第二遍: 處理待處理的導入關係...")
+            # Second pass: Process pending imports...
+            
+            # Create a parser with the aggregated data to process imports
+            final_parser = ASTParser()
+            final_parser.nodes = all_nodes
+            final_parser.module_definitions = all_module_definitions
+            final_parser.pending_imports = all_pending_imports
+            final_parser.module_to_file = all_module_to_file
+            
+            # Process all pending imports
+            final_parser._process_pending_imports()
+            
+            logger.info(f"第二遍完成: 處理了 {len(final_parser.relations)} 個關係")
+            # Second pass complete: Processed {len(final_parser.relations)} relationships
+            
+            return final_parser.nodes, final_parser.relations
+            
+        except Exception as e:
+            # Graceful degradation: Fall back to sequential processing
+            logger.error(f"並行處理失敗: {e}")
+            # Parallel processing failed: {e}
+            logger.warning("回退到順序處理模式...")
+            # Falling back to sequential processing mode...
+            
+            # Log detailed error for debugging
+            import traceback
+            logger.debug(f"並行處理錯誤詳情:\n{traceback.format_exc()}")
+            # Parallel processing error details
+            
+            # Use the original sequential implementation
+            return self.parser.parse_directory(codebase_path)
     
     def _generate_embeddings(self, nodes: Dict[str, Any]) -> None:
         """為節點生成嵌入向量
