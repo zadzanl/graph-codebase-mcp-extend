@@ -8,6 +8,7 @@ import json
 from concurrent.futures import as_completed
 
 from src.ast_parser.parser import ASTParser
+from src.ast_parser.multi_parser import MultiLanguageParser
 from src.embeddings.factory import get_embedding_provider
 from src.embeddings.embedder import CodeEmbedder, OpenAIEmbeddings
 from src.neo4j_storage.graph_db import Neo4jDatabase
@@ -61,7 +62,14 @@ class CodebaseKnowledgeGraph:
         )
         
         # 初始化程式碼解析器
+        # Initialize code parser
         self.parser = ASTParser()
+        
+        # Store ast-grep feature flags for use in parsing methods
+        # 儲存 ast-grep 功能標誌供解析方法使用
+        self.use_ast_grep = os.getenv("USE_AST_GREP", "false").lower() == "true"
+        self.ast_grep_languages = os.getenv("AST_GREP_LANGUAGES", "python,javascript,typescript").split(',')
+        self.ast_grep_fallback = os.getenv("AST_GREP_FALLBACK_TO_LEGACY", "true").lower() == "true"
         
         # 初始化嵌入處理器
         # If an explicit API key is provided prefer the wrapper, otherwise use the factory
@@ -186,26 +194,27 @@ class CodebaseKnowledgeGraph:
         logger.info("創建資料庫結構...")
         self.db.create_schema_constraints()
         
-        # Collect all Python files
-        python_files = self._collect_python_files(codebase_path)
-        logger.info(f"找到 {len(python_files)} 個 Python 檔案")
-        # Found {len(python_files)} Python files
+        # Collect all source files (Python, JS, TS)
+        source_files = self._collect_source_files(codebase_path)
+        logger.info(f"找到 {len(source_files)} 個源代碼檔案")
+        # Found {len(source_files)} source files
         
         # Get configuration for parallel processing
         parallel_enabled = os.getenv("PARALLEL_INDEXING_ENABLED", "true").lower() == "true"
         min_files_for_parallel = int(os.getenv("MIN_FILES_FOR_PARALLEL", "50"))
         
         # Determine if we should use parallel processing
-        use_parallel = parallel_enabled and len(python_files) >= min_files_for_parallel
+        use_parallel = parallel_enabled and len(source_files) >= min_files_for_parallel
         
         if use_parallel:
-            logger.info(f"使用並行處理模式處理 {len(python_files)} 個檔案")
-            # Use parallel processing mode to process {len(python_files)} files
-            nodes, relations = self._process_files_parallel(python_files, codebase_path)
+            logger.info(f"使用並行處理模式處理 {len(source_files)} 個檔案")
+            # Use parallel processing mode to process {len(source_files)} files
+            nodes, relations = self._process_files_parallel(source_files, codebase_path)
         else:
-            logger.info(f"使用順序處理模式處理 {len(python_files)} 個檔案")
-            # Use sequential processing mode to process {len(python_files)} files
-            nodes, relations = self.parser.parse_directory(codebase_path)
+            logger.info(f"使用順序處理模式處理 {len(source_files)} 個檔案")
+            # Use sequential processing mode to process {len(source_files)} files
+            # For sequential mode, we still need to use the router
+            nodes, relations = self._process_directory_with_routing(codebase_path)
         
         logger.info(f"共解析出 {len(nodes)} 個節點和 {len(relations)} 個關係")
         # Total {len(nodes)} nodes and {len(relations)} relationships parsed
@@ -264,33 +273,164 @@ class CodebaseKnowledgeGraph:
         # Codebase processing complete! Time taken: {elapsed_time:.2f} seconds (Parallel mode: {use_parallel})
         return len(nodes), len(relations)
     
-    def _collect_python_files(self, directory_path: str) -> List[str]:
-        """收集目錄中的所有 Python 檔案
-        # Collect all Python files in the directory
+    def _collect_source_files(self, directory_path: str) -> List[str]:
+        """收集目錄中的所有源代碼檔案 (支持 7 種語言)
+        # Collect all source code files in the directory (supports 7 languages)
         
         Args:
             directory_path: 目錄路徑
             # directory_path: Directory path
             
         Returns:
-            Python 檔案路徑列表
-            # List of Python file paths
+            源代碼檔案路徑列表
+            # List of source code file paths
         """
-        python_files = []
+        source_files = []
+        
+        # When USE_AST_GREP is enabled, collect files based on AST_GREP_LANGUAGES
+        if self.use_ast_grep:
+            supported_extensions = []
+            if 'python' in self.ast_grep_languages:
+                supported_extensions.append('.py')
+            if 'javascript' in self.ast_grep_languages or 'typescript' in self.ast_grep_languages:
+                supported_extensions.extend(['.js', '.ts', '.jsx', '.tsx'])
+            if 'java' in self.ast_grep_languages:
+                supported_extensions.append('.java')
+            if 'cpp' in self.ast_grep_languages:
+                supported_extensions.extend(['.cpp', '.cc', '.cxx', '.h', '.hpp'])
+            if 'rust' in self.ast_grep_languages:
+                supported_extensions.append('.rs')
+            if 'go' in self.ast_grep_languages:
+                supported_extensions.append('.go')
+            supported_extensions = tuple(supported_extensions)
+            
+            logger.info(f"ast-grep 模式已啟用語言: {', '.join(self.ast_grep_languages)}")
+            # ast-grep mode enabled languages: ...
+        else:
+            # Legacy mode: only Python and optionally JS/TS
+            enable_js_ts = os.getenv("ENABLE_JS_TS_PARSING", "true").lower() == "true"
+            python_extensions = (".py",)
+            js_ts_extensions = (".js", ".ts", ".jsx", ".tsx") if enable_js_ts else ()
+            supported_extensions = python_extensions + js_ts_extensions
+            
+            if enable_js_ts:
+                logger.info("已啟用多語言支持: Python, JavaScript, TypeScript")
+                # Multi-language support enabled: Python, JavaScript, TypeScript
+            else:
+                logger.info("僅啟用 Python 支持")
+                # Only Python support enabled
+        
         for root, _, files in os.walk(directory_path):
             for file_name in files:
-                if file_name.endswith(".py"):
+                if file_name.endswith(supported_extensions):
                     file_path = os.path.join(root, file_name)
-                    python_files.append(file_path)
-        return python_files
+                    source_files.append(file_path)
+        
+        return source_files
     
-    def _process_files_parallel(self, python_files: List[str], codebase_path: str) -> Tuple[Dict[str, Any], List[Any]]:
-        """使用並行處理模式處理 Python 檔案
-        # Process Python files using parallel processing mode
+    def _get_parser_for_file(self, file_path: str):
+        """根據檔案副檔名選擇適當的解析器
+        # Select the appropriate parser based on file extension
         
         Args:
-            python_files: Python 檔案路徑列表
-            # python_files: List of Python file paths
+            file_path: 檔案路徑
+            # file_path: File path
+            
+        Returns:
+            解析器實例 (ASTParser, TypeScriptParser, 或 MultiLanguageParser)，如果不支持則返回 None
+            # Parser instance (ASTParser, TypeScriptParser, or MultiLanguageParser), None if unsupported
+        """
+        # When USE_AST_GREP is enabled, use MultiLanguageParser coordinator
+        # 當啟用 USE_AST_GREP 時，使用 MultiLanguageParser 協調器
+        if self.use_ast_grep:
+            return MultiLanguageParser(
+                use_ast_grep=True,
+                ast_grep_languages=self.ast_grep_languages,
+                ast_grep_fallback=self.ast_grep_fallback
+            )
+        
+        # Otherwise, use legacy routing
+        # 否則，使用傳統路由
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        if ext == '.py':
+            from src.ast_parser.parser import ASTParser
+            return ASTParser()
+        elif ext in ['.js', '.ts', '.jsx', '.tsx']:
+            from src.ast_parser.typescript_parser import TypeScriptParser
+            return TypeScriptParser()
+        else:
+            logger.warning(f"不支持的檔案副檔名: {ext} ({file_path})")
+            # Unsupported file extension: {ext} ({file_path})
+            return None
+    
+    def _process_directory_with_routing(self, directory_path: str) -> Tuple[Dict[str, Any], List[Any]]:
+        """使用解析器路由處理目錄（順序模式）
+        # Process directory with parser routing (sequential mode)
+        
+        Args:
+            directory_path: 目錄路徑
+            # directory_path: Directory path
+            
+        Returns:
+            節點字典和關係列表
+            # Node dictionary and relationship list
+        """
+        # When USE_AST_GREP is enabled, use MultiLanguageParser for coordinated parsing
+        # 當啟用 USE_AST_GREP 時，使用 MultiLanguageParser 進行協調解析
+        if self.use_ast_grep:
+            coordinator = MultiLanguageParser(
+                use_ast_grep=True,
+                ast_grep_languages=self.ast_grep_languages,
+                ast_grep_fallback=self.ast_grep_fallback
+            )
+            return coordinator.parse_directory(directory_path, build_index=True)
+        
+        # Legacy routing (USE_AST_GREP=false)
+        # 傳統路由 (USE_AST_GREP=false)
+        all_nodes = {}
+        all_module_definitions = {}
+        all_pending_imports = []
+        all_module_to_file = {}
+        
+        # Collect all source files
+        source_files = self._collect_source_files(directory_path)
+        
+        # First pass: Parse all files and build index
+        for file_path in source_files:
+            try:
+                parser = self._get_parser_for_file(file_path)
+                if parser:
+                    nodes, _ = parser.parse_file(file_path, build_index=True)
+                    
+                    # Merge results
+                    all_nodes.update(nodes)
+                    all_module_definitions.update(parser.module_definitions)
+                    all_pending_imports.extend(parser.pending_imports)
+                    all_module_to_file.update(parser.module_to_file)
+            except Exception as e:
+                logger.error(f"解析檔案 {file_path} 時發生錯誤: {e}")
+                # Error parsing file {file_path}: {e}
+        
+        # Second pass: Process pending imports
+        # Create a temporary parser to process imports
+        from src.ast_parser.parser import ASTParser
+        temp_parser = ASTParser()
+        temp_parser.nodes = all_nodes
+        temp_parser.module_definitions = all_module_definitions
+        temp_parser.pending_imports = all_pending_imports
+        temp_parser.module_to_file = all_module_to_file
+        temp_parser._process_pending_imports()
+        
+        return all_nodes, temp_parser.relations
+    
+    def _process_files_parallel(self, source_files: List[str], codebase_path: str) -> Tuple[Dict[str, Any], List[Any]]:
+        """使用並行處理模式處理源代碼檔案（支持多語言）
+        # Process source files using parallel processing mode (multi-language support)
+        
+        Args:
+            source_files: 源代碼檔案路徑列表
+            # source_files: List of source file paths
             codebase_path: 程式碼庫目錄路徑
             # codebase_path: Codebase directory path
             
@@ -299,6 +439,7 @@ class CodebaseKnowledgeGraph:
             # Node dictionary and relationship list
         """
         from src.ast_parser.parser import ASTParser
+        from src.ast_parser.typescript_parser import TypeScriptParser
         
         try:
             # First pass: Parse all files in parallel to build module definition index
@@ -316,14 +457,33 @@ class CodebaseKnowledgeGraph:
                 """Worker function to parse a single file
                 
                 Args:
-                    file_path: Path to the Python file
+                    file_path: Path to the source file
                     
                 Returns:
                     Tuple of (nodes, module_definitions, pending_imports, module_to_file)
                 """
                 try:
-                    # Create a dedicated parser for this file
-                    parser = ASTParser()
+                    # When USE_AST_GREP is enabled, use MultiLanguageParser
+                    # 當啟用 USE_AST_GREP 時，使用 MultiLanguageParser
+                    if self.use_ast_grep:
+                        parser = MultiLanguageParser(
+                            use_ast_grep=True,
+                            ast_grep_languages=self.ast_grep_languages,
+                            ast_grep_fallback=self.ast_grep_fallback
+                        )
+                    else:
+                        # Legacy routing: Select parser based on file extension
+                        # 傳統路由：根據檔案副檔名選擇解析器
+                        ext = os.path.splitext(file_path)[1].lower()
+                        
+                        if ext == '.py':
+                            parser = ASTParser()
+                        elif ext in ['.js', '.ts', '.jsx', '.tsx']:
+                            parser = TypeScriptParser()
+                        else:
+                            logger.warning(f"不支持的檔案副檔名: {ext} ({file_path})")
+                            return ({}, {}, [], {})
+                    
                     parser.parse_file(file_path, build_index=True)
                     
                     return (
@@ -340,7 +500,7 @@ class CodebaseKnowledgeGraph:
             # Use the processing pool manager to process files in parallel
             with get_processing_pool() as pool:
                 # Submit all file parsing tasks
-                futures = [pool.submit(parse_file_worker, file_path) for file_path in python_files]
+                futures = [pool.submit(parse_file_worker, file_path) for file_path in source_files]
                 
                 # Filter out None values (though submit() should always return a Future)
                 futures = [f for f in futures if f is not None]
@@ -359,8 +519,8 @@ class CodebaseKnowledgeGraph:
                         
                         completed += 1
                         if completed % 10 == 0:
-                            logger.info(f"已完成 {completed}/{len(python_files)} 個檔案")
-                            # Completed {completed}/{len(python_files)} files
+                            logger.info(f"已完成 {completed}/{len(source_files)} 個檔案")
+                            # Completed {completed}/{len(source_files)} files
                     except Exception as e:
                         logger.error(f"處理檔案結果時發生錯誤: {e}")
                         # Error processing file result: {e}
@@ -400,8 +560,8 @@ class CodebaseKnowledgeGraph:
             logger.debug(f"並行處理錯誤詳情:\n{traceback.format_exc()}")
             # Parallel processing error details
             
-            # Use the original sequential implementation
-            return self.parser.parse_directory(codebase_path)
+            # Use sequential processing with routing
+            return self._process_directory_with_routing(codebase_path)
     
     def _generate_embeddings(self, nodes: Dict[str, Any]) -> None:
         """為節點生成嵌入向量
@@ -606,6 +766,11 @@ def main():
     parser.add_argument("--mcp-port", type=int, default=8080, help="MCP服務器端口號（僅用於SSE傳輸）")
     
     args = parser.parse_args()
+    # --- AST-grep integration feature flags ---
+    use_ast_grep = os.getenv("USE_AST_GREP", "false").lower() == "true"
+    ast_grep_languages = os.getenv("AST_GREP_LANGUAGES", "python,javascript,typescript").split(',')
+    ast_grep_fallback = os.getenv("AST_GREP_FALLBACK_TO_LEGACY", "true").lower() == "true"
+    logger.info(f"USE_AST_GREP={use_ast_grep}, AST_GREP_LANGUAGES={ast_grep_languages}, AST_GREP_FALLBACK_TO_LEGACY={ast_grep_fallback}")
     
     # 創建知識圖譜
     kg = CodebaseKnowledgeGraph(
