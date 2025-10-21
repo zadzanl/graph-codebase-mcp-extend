@@ -23,14 +23,15 @@ OPENAI_API_KEY_PRESENT = os.environ.get("OPENAI_API_KEY") is not None
 async def run_test():
     print("--- 開始測試 MCP Server 工具 ---")
 
-    # Mock Neo4j 和 OpenAI
+    # Mock Neo4j 和 embedding factory
     with patch('src.mcp.server.Neo4jDatabase') as MockNeo4jDatabase, \
-         patch('src.mcp.server.OpenAIEmbeddings') as MockOpenAIEmbeddings, \
+         patch('src.mcp.server.get_embedding_provider') as MockGetEmbeddingProvider, \
          patch('src.mcp.server.CodeEmbedder') as MockCodeEmbedder:
 
         # 配置 Mock 物件
         mock_db_instance = MockNeo4jDatabase.return_value
-        mock_embedder_instance = MockOpenAIEmbeddings.return_value
+        mock_embedding_provider = MagicMock()
+        MockGetEmbeddingProvider.return_value = mock_embedding_provider
         mock_code_embedder_instance = MockCodeEmbedder.return_value
 
         # 模擬 DB 返回值 (使用 AsyncMock)
@@ -39,9 +40,12 @@ async def run_test():
         mock_db_instance.execute_cypher = AsyncMock(return_value=[{"result": "mock_cypher_data"}])
 
         # 模擬 Embedder 返回值
-        # Configure embedder mock to return a vector with the wrapper's default dimension
-        default_dim = getattr(MockOpenAIEmbeddings.return_value, 'dimension', 1536)
-        mock_embedder_instance.embed_text = MagicMock(return_value=[0.1] * default_dim)
+        # Configure embedding provider mock to return a vector
+        default_dim = 1536
+        mock_embedding_provider.embed_text = MagicMock(return_value=[0.1] * default_dim)
+        
+        # Configure code embedder to have access to the provider
+        mock_code_embedder_instance.provider = mock_embedding_provider
 
         # 配置 FastMCP Mock - 讓 .tool() 返回一個簡單的裝飾器，它什麼都不做
         def mock_tool_decorator(*args, **kwargs):
@@ -58,8 +62,7 @@ async def run_test():
             mcp_server = CodebaseKnowledgeGraphMCP(
                 neo4j_uri="mock_uri",
                 neo4j_user="mock_user",
-                neo4j_password="mock_pass",
-                openai_api_key="mock_key" # 提供假的 Key 以通過檢查
+                neo4j_password="mock_pass"
             )
             print("- 成功: 初始化 CodebaseKnowledgeGraphMCP (使用 Mock)")
 

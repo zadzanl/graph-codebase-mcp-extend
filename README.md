@@ -4,6 +4,11 @@
 
 Intelligent code search and analysis through Neo4j knowledge graphs
 
+## 🚀 Quick Start
+
+**New to this project?** Check out the (more) comprehensive guides:
+- **[Getting Started Guide](GETTING_STARTED.md)** - Comprehensive setup and usage documentation
+
 ## Project Overview
 
 Graph-Codebase-MCP is a specialized tool for creating knowledge graphs of codebases, combining Neo4j graph database with Model Context Protocol (MCP) to provide intelligent code search and analysis capabilities. The project utilizes Abstract Syntax Tree (AST) to analyze Python code structures and employs OpenAI Embeddings for semantic encoding, storing code entities and relationships in Neo4j to form a comprehensive knowledge graph.

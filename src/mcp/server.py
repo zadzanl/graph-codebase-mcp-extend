@@ -11,7 +11,8 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.neo4j_storage.graph_db import Neo4jDatabase
-from src.embeddings.embedder import OpenAIEmbeddings, CodeEmbedder
+from src.embeddings.factory import get_embedding_provider
+from src.embeddings.embedder import CodeEmbedder
 
 # 設定日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -21,25 +22,30 @@ logger = logging.getLogger(__name__)
 class CodebaseKnowledgeGraphMCP:
     """Codebase知識圖譜的MCP服務器實現"""
     
-    def __init__(self, neo4j_uri=None, neo4j_user=None, neo4j_password=None, openai_api_key=None):
+    def __init__(self, neo4j_uri=None, neo4j_user=None, neo4j_password=None, server_host=None, server_port=None):
         """初始化MCP服務器
         
         Args:
             neo4j_uri: Neo4j資料庫URI，若為None則從環境變數取得
             neo4j_user: Neo4j使用者名稱，若為None則從環境變數取得
             neo4j_password: Neo4j密碼，若為None則從環境變數取得
-            openai_api_key: OpenAI API金鑰，若為None則從環境變數取得
+            server_host: MCP服務器主機地址，用於HTTP/SSE傳輸
+            server_port: MCP服務器端口，用於HTTP/SSE傳輸
         """
         self.neo4j_uri = neo4j_uri or os.environ.get("NEO4J_URI")
         self.neo4j_user = neo4j_user or os.environ.get("NEO4J_USER")
         self.neo4j_password = neo4j_password or os.environ.get("NEO4J_PASSWORD")
-        self.openai_api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
         
-        # 初始化FastMCP
+        # Get server configuration from parameters, environment, or use defaults
+        # 從參數、環境變數獲取服務器配置或使用默認值
+        self.server_host = server_host or os.environ.get("MCP_SERVER_HOST", "127.0.0.1")
+        self.server_port = server_port or int(os.environ.get("MCP_SERVER_PORT", "8080"))
+        
+        # 初始化FastMCP (配置 host 和 port)
         self.mcp = FastMCP(
-            "Codebase KG Server",
-            description="讓AI代理探索程式碼庫的知識圖譜",
-            dependencies=["neo4j", "openai"]
+            name="Codebase KG Server",
+            host=self.server_host,
+            port=self.server_port
         )
         
         # 初始化Neo4j資料庫
@@ -49,9 +55,9 @@ class CodebaseKnowledgeGraphMCP:
             password=self.neo4j_password
         )
         
-        # 初始化OpenAI嵌入處理器
-        self.embedder = OpenAIEmbeddings(api_key=self.openai_api_key)
-        self.code_embedder = CodeEmbedder(self.embedder)
+        # 初始化嵌入處理器 (使用工廠模式支持多種提供商)
+        embedding_provider = get_embedding_provider()
+        self.code_embedder = CodeEmbedder(embedding_provider)
         
         # 註冊MCP工具
         self._register_tools()
@@ -82,7 +88,7 @@ class CodebaseKnowledgeGraphMCP:
                 
                 if search_type == "vector":
                     # 生成查詢的嵌入向量
-                    vector = self.embedder.embed_text(query)
+                    vector = self.code_embedder.provider.embed_text(query)
                     
                     # 使用向量搜索
                     for node_label in ["Function", "Method", "Class", "File"]:
@@ -429,30 +435,29 @@ class CodebaseKnowledgeGraphMCP:
         """啟動MCP服務器
         
         Args:
-            port: HTTP服務器端口號，僅用於SSE傳輸
-            transport: 傳輸協議，可選 "stdio" 或 "sse"
+            port: HTTP服務器端口號 (ignored, port is set during initialization)
+            transport: 傳輸協議，可選 "stdio", "http" (streamable-http) 或 "sse"
         """
-        if transport == "sse":
-            if not port:
-                port = 8080
-            
-            logger.info(f"MCP服務器以SSE模式啟動，監聽於 http://localhost:{port}")
-            self.mcp.run_server(transport="sse", port=port)
+        if transport == "http":
+            logger.info(f"MCP服務器以HTTP模式啟動，監聽於 http://{self.server_host}:{self.server_port}/mcp")
+            self.mcp.run(transport="streamable-http")
+        elif transport == "sse":
+            logger.info(f"MCP服務器以SSE模式啟動，監聽於 http://{self.server_host}:{self.server_port}/sse")
+            self.mcp.run(transport="sse")
         else:
             logger.info("MCP服務器以stdio模式啟動")
-            self.mcp.run_server(transport="stdio")
+            self.mcp.run(transport="stdio")
 
 
 def main():
     """主函數"""
     parser = argparse.ArgumentParser(description="Codebase知識圖譜MCP服務器")
     parser.add_argument("--codebase-path", help="程式碼庫路徑", default=".")
-    parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio", help="MCP傳輸協議")
-    parser.add_argument("--port", type=int, help="HTTP服務器端口號（僅用於SSE傳輸）", default=8080)
+    parser.add_argument("--transport", choices=["stdio", "http", "sse"], default="stdio", help="MCP傳輸協議")
+    parser.add_argument("--port", type=int, help="HTTP服務器端口號（僅用於HTTP/SSE傳輸）", default=8080)
     parser.add_argument("--neo4j-uri", help="Neo4j資料庫URI")
     parser.add_argument("--neo4j-user", help="Neo4j使用者名稱")
     parser.add_argument("--neo4j-password", help="Neo4j密碼")
-    parser.add_argument("--openai-api-key", help="OpenAI API金鑰")
     
     args = parser.parse_args()
     
@@ -461,11 +466,11 @@ def main():
         neo4j_uri=args.neo4j_uri,
         neo4j_user=args.neo4j_user,
         neo4j_password=args.neo4j_password,
-        openai_api_key=args.openai_api_key
+        server_port=args.port
     )
     
     # 啟動服務器
-    server.start(port=args.port, transport=args.transport)
+    server.start(transport=args.transport)
 
 
 if __name__ == "__main__":
