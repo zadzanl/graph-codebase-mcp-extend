@@ -27,20 +27,22 @@ This structured representation enables AI to more effectively understand the str
 
 ## Core Features
 
-- **Code Parsing**: Utilize Abstract Syntax Tree (AST) to analyze Python code structures, extracting variables, functions, classes, and their relationships
-- **Semantic Embedding**: Generate vector representations for code elements using OpenAI Embeddings to capture semantic characteristics
-- **Knowledge Graph Construction**: Store parsed code elements and relationships in Neo4j graph database to form a complete knowledge graph
-- **Knowledge Graph Visualization**: Intuitively display code structures and relationships through Neo4j's visualization capabilities
-- **MCP Query Interface**: Provide an AI-agent-friendly query interface following the Model Context Protocol standard
-- **Relationship Queries**: Support complex code relationship queries, such as function call chains and dependency relationships
-- **Cross-File Analysis**: Accurately track dependencies between files, including module imports and symbol references
+- **Multi-Language Code Parsing**: Support for 6+ programming languages using both legacy AST parsers and modern ast-grep adapters
+- **Semantic Embeddings**: Generate vector representations for code elements using configurable embedding providers (OpenAI, Google Gemini, DeepInfra)
+- **Knowledge Graph Construction**: Store parsed code entities and relationships in Neo4j to form a comprehensive, queryable knowledge graph
+- **Cross-File Dependency Analysis**: Track imports, symbols, and dependencies across file boundaries for complete codebase understanding
+- **Parallel Indexing**: Dramatically speed up large codebase processing with automatic parallelization and intelligent fallback strategies
+- **MCP Query Interface**: Provide an AI-agent-friendly interface following the Model Context Protocol standard
+- **Relationship Queries**: Support complex queries including function call chains, inheritance hierarchies, and dependency networks
 
 ## Supported Programming Languages
 
 - [x] Python
-- [ ] Java
-- [ ] C++
-- [ ] JavaScript
+- [x] JavaScript / TypeScript
+- [x] Java
+- [x] C++
+- [x] Rust
+- [x] Go
 
 ## System Requirements
 
@@ -91,8 +93,8 @@ NEO4J_MAX_CONNECTION_POOL_SIZE=16
 ### 1. Clone the Project
 
 ```bash
-git clone https://github.com/eric050828/graph-codebase-mcp.git
-cd graph-codebase-mcp
+git clone https://github.com/zadzanl/graph-codebase-mcp-extend.git
+cd graph-codebase-mcp-extend
 ```
 
 ### 2. Install Dependencies
@@ -116,29 +118,40 @@ References:
 
 ### 3. Configure Environment Variables
 
-Create a `.env` file or use `mcp.json` to specify environment parameters:
+Create a `.env` file in the project root (see [Embedding Provider Configuration](#embedding-provider-configuration) for more details):
 
-#### `.env` file example:
+#### `.env` file example (with OpenAI):
 ```
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 OPENAI_API_KEY=your_openai_api_key
-# Parallel indexing configuration (optional; sensible defaults are used if omitted)
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
 PARALLEL_INDEXING_ENABLED=true
-MAX_WORKERS=8
-MIN_FILES_FOR_PARALLEL=50
-NEO4J_MAX_CONNECTION_POOL_SIZE=16
+MAX_WORKERS=4
 ```
 
-#### `mcp.json` file example:
+#### `.env` file example (with Google Gemini):
+```
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
+EMBEDDING_PROVIDER=google
+EMBEDDING_MODEL=text-embedding-004
+GEMINI_API_KEY=your_gemini_api_key
+PARALLEL_INDEXING_ENABLED=true
+MAX_WORKERS=4
+```
+
+#### `mcp.json` configuration example:
 ```json
 {
   "mcpServers": {
     "graph-codebase-mcp": {
       "command": "python",
       "args": [
-          "src/mcp_server.py",
+          "src/main.py",
           "--codebase-path",
           "path/to/your/codebase"
         ],
@@ -146,6 +159,8 @@ NEO4J_MAX_CONNECTION_POOL_SIZE=16
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
+        "EMBEDDING_PROVIDER": "openai",
+        "EMBEDDING_MODEL": "text-embedding-3-small",
         "OPENAI_API_KEY": "your_openai_api_key"
       }
     }
@@ -194,36 +209,56 @@ This project supports various code-related queries, such as:
 ```
 graph-codebase-mcp/
 ├── src/
-│   ├── ast_parser/           # Code AST parsing module
-│   │   └── parser.py         # AST parser implementation with cross-file dependency analysis
-│   ├── embeddings/           # OpenAI Embeddings processing module
-│   ├── neo4j_storage/        # Neo4j database operations module
+│   ├── ast_parser/           # Multi-language AST parsing module
+│   │   ├── parser.py         # Legacy Python AST parser
+│   │   ├── multi_parser.py   # Multi-language parser coordinator
+│   │   ├── language_detector.py # Automatic language detection
+│   │   └── adapters/         # Language-specific ast-grep adapters
+│   │       ├── python_adapter.py
+│   │       ├── javascript_adapter.py
+│   │       ├── java_adapter.py
+│   │       ├── cpp_adapter.py
+│   │       ├── rust_adapter.py
+│   │       └── go_adapter.py
+│   ├── embeddings/           # Embedding provider module
+│   │   ├── factory.py        # Provider factory (OpenAI, Google Gemini, DeepInfra)
+│   │   ├── openai_compatible.py # OpenAI-compatible API client
+│   │   ├── base.py           # Base embedding provider interface
+│   │   └── embedder.py       # Code embedding processor
+│   ├── neo4j_storage/        # Neo4j database operations
+│   │   └── graph_db.py       # Neo4j graph database interface
+│   ├── parallel/             # Parallel processing module
+│   │   └── pool_manager.py   # Thread/process pool manager
+│   ├── utils/                # Utility functions
+│   │   └── runtime_detection.py # Python runtime detection (3.14 free-threading)
 │   ├── mcp/                  # MCP Server implementation
+│   │   └── server.py         # MCP server entry point
 │   ├── main.py               # Main program entry point
-│   └── mcp_server.py         # MCP Server startup entry point
-├── examples/                 # Usage examples
-├── tests/                    # Test cases
+│   └── mcp_server.py         # MCP server startup script
+├── tests/                    # Comprehensive test suite
 ├── docs/                     # Documentation and diagrams
-│   └── images/               # Image resources
-├── .env.example              # Environment variable example
-├── requirements.txt          # Dependency package list
-└── README.md                 # Documentation
+│   └── images/               # Visual resources
+├── .env                      # Environment configuration
+├── requirements.txt          # Dependencies
+└── README.md                 # This file
 ```
 
 ## Technology Stack
 
-- **Programming Language**: Python 3.10+ (Python 3.14 free-threaded recommended)
-- **Code Analysis**: Python AST module
-- **Vector Embedding**: OpenAI Embeddings
-- **Graph Database**: Neo4j
-- **Interface Protocol**: Model Context Protocol (MCP)
-- **SDK Support**: MCP Python SDK, Neo4j Python SDK
+- **Languages**: Python 3.10+ (Python 3.14 free-threaded recommended for best performance)
+- **Code Analysis**: Python AST module, ast-grep, Tree-sitter
+- **Multi-Language Support**: Dedicated adapters for Python, JavaScript/TypeScript, Java, C++, Rust, Go
+- **Vector Embeddings**: OpenAI, Google Gemini, or DeepInfra APIs (OpenAI-compatible)
+- **Graph Database**: Neo4j 5.x with connection pooling
+- **Parallel Processing**: ThreadPoolExecutor (Python 3.14) or ProcessPoolExecutor with automatic selection
+- **Interface Protocol**: Model Context Protocol (MCP) Python SDK
+- **Web Framework**: Starlette/Uvicorn for MCP server hosting
 
 ## License
 
 MIT License
 
-## References
+## Useful References
 
 - [Neo4j GraphRAG Python Package](https://neo4j.com/blog/news/graphrag-python-package/)
 - [Model Context Protocol](https://github.com/modelcontextprotocol/specification)
@@ -232,15 +267,43 @@ MIT License
 
 ## Embedding Provider Configuration
 
-You can configure the embedding provider by setting the following environment variables:
+The system supports multiple embedding providers. Configure via environment variables:
 
-- `EMBEDDING_PROVIDER`: The provider to use. Supported values are `openai` (default), `google`, `deepinfra`, or `generic`.
-- `EMBEDDING_MODEL`: The name of the embedding model to use (e.g., `text-embedding-3-small`).
-- `OPENAI_API_KEY`: Your OpenAI API key.
-- `GEMINI_API_KEY`: Your Google Gemini API key.
-- `DEEPINFRA_API_KEY`: Your DeepInfra API key.
-- `EMBEDDING_API_KEY`: Your API key for a generic provider.
-- `EMBEDDING_API_BASE_URL`: The base URL for a generic provider.
+### OpenAI (Default)
+```env
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_API_KEY=your_openai_api_key
+```
+
+### Google Gemini
+```env
+EMBEDDING_PROVIDER=google
+EMBEDDING_MODEL=text-embedding-004
+GEMINI_API_KEY=your_gemini_api_key
+```
+
+### DeepInfra
+```env
+EMBEDDING_PROVIDER=deepinfra
+EMBEDDING_MODEL=your_model_name
+DEEPINFRA_API_KEY=your_deepinfra_api_key
+```
+
+### Generic OpenAI-Compatible Provider
+```env
+EMBEDDING_PROVIDER=generic
+EMBEDDING_MODEL=your_model_name
+EMBEDDING_API_KEY=your_api_key
+EMBEDDING_API_BASE_URL=https://your-provider-endpoint/v1
+```
+
+### Supported Models and Dimensions
+| Provider | Model | Dimensions | Notes |
+|----------|-------|-----------|-------|
+| OpenAI | text-embedding-3-small | 1536 | Recommended default |
+| OpenAI | text-embedding-3-large | 3072 | Higher quality |
+| Google | text-embedding-004 | 768 | Legacy, being deprecated |
+| Google | gemini-embedding-001 | 3072 | Latest, recommended |
 
 ---
-
