@@ -81,6 +81,12 @@ MIN_FILES_FOR_PARALLEL=50
 
 # Neo4j connection pool size (default: MAX_WORKERS * 2)
 NEO4J_MAX_CONNECTION_POOL_SIZE=16
+
+# Default semantic grouping threshold (0.0 to disable, 0.7 recommended)
+GROUP_THRESHOLD=0.7
+
+# Maximum number of groups to return in results
+GROUP_MAX_GROUPS=10
 ```
 
 ### Troubleshooting
