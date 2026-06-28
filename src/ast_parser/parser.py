@@ -217,15 +217,29 @@ class ASTParser:
                         "original_name": base_name
                     })
                 else:
-                    # 創建繼承關係
-                    # Create inheritance relationship
-                    self.relations.append(
-                        CodeRelation(
-                            source_id=node_id,
-                            target_id=f"Class:{self.current_file}:{base_name}:0",
-                            relation_type="EXTENDS",
+                    # 創建繼承關係 - look up actual base class to get correct line number
+                    # Create inheritance relationship - look up actual base class to get correct line number
+                    base_class_id = None
+                    for nid, n in self.nodes.items():
+                        if (n.node_type == "Class" and
+                            n.name == base_name and
+                            n.file_path == self.current_file):
+                            base_class_id = n.node_id
+                            break
+
+                    if base_class_id:
+                        self.relations.append(
+                            CodeRelation(
+                                source_id=node_id,
+                                target_id=base_class_id,
+                                relation_type="EXTENDS",
+                            )
                         )
-                    )
+                    else:
+                        # Base class not found yet (might be defined later)
+                        # We'll need to handle forward references in a second pass
+                        # For now, skip creating the relationship
+                        pass
         
         # 設置當前類別上下文
         # Set current class context
@@ -552,14 +566,15 @@ class ASTParser:
                 elif self.current_function:
                     # 處理本地函數調用
                     # Handle calls to local functions
-                    self.relations.append(
-                        CodeRelation(
-                            source_id=self.current_function,
-                            target_id=f"Function:{self.current_file}:{func_name}:0",  # 假設的目標ID
-                            # Assumed target ID
-                            relation_type="CALLS",
-                        )
-                    )
+                    # Add to pending imports for proper resolution
+                    self.pending_imports.append({
+                        "type": "CALLS",
+                        "source_id": self.current_function,
+                        "imported_module": None,  # Local call
+                        "imported_name": func_name,
+                        "original_name": func_name,
+                        "is_local": True
+                    })
             
             elif isinstance(func, ast.Attribute):
                 # 調用物件的方法
@@ -588,14 +603,16 @@ class ASTParser:
                     elif self.current_function:
                         # 處理本地物件方法調用
                         # Handle method calls on local objects
-                        self.relations.append(
-                            CodeRelation(
-                                source_id=self.current_function,
-                                target_id=f"Method:{self.current_file}:{method_name}:0",  # 假設的目標ID
-                                relation_type="CALLS",
-                                properties={"object": obj_name},
-                            )
-                        )
+                        # Add to pending imports for proper resolution
+                        self.pending_imports.append({
+                            "type": "CALLS_METHOD",
+                            "source_id": self.current_function,
+                            "imported_module": None,  # Local call
+                            "imported_class": None,
+                            "method_name": method_name,
+                            "original_obj_name": obj_name,
+                            "is_local": True
+                        })
         
         # 遞迴查找嵌套的函數調用
         # Recursively search for nested function calls
@@ -761,61 +778,121 @@ class ASTParser:
                 elif import_type == "CALLS":
                     # 函數調用關係
                     # Function call relationship
-                    module_name = import_info["imported_module"]
                     func_name = import_info["imported_name"]
+                    is_local = import_info.get("is_local", False)
                     
-                    # 檢查模組定義索引
-                    # Check module definitions index
-                    if module_name in self.module_definitions and func_name in self.module_definitions[module_name]:
-                        target_node_id = self.module_definitions[module_name][func_name]
-                        
-                        # 創建調用關係
-                        # Create a CALLS relation
-                        self._add_relation(
-                            CodeRelation(
-                                source_id=source_id,
-                                target_id=target_node_id,
-                                relation_type="CALLS",
-                                properties={"original_name": import_info.get("original_name")}
+                    if is_local:
+                        # 處理本地函數調用 - 在當前文件中查找
+                        # Handle local function calls - search in current file
+                        # Extract the file path from source_id
+                        source_node = self.nodes.get(source_id)
+                        if source_node:
+                            current_file = source_node.file_path
+
+                            # Search for the function in the same file
+                            for node_id, node in self.nodes.items():
+                                if (node.node_type in ["Function", "Method"] and
+                                    node.name == func_name and
+                                    node.file_path == current_file):
+                                    # 創建調用關係
+                                    # Create a CALLS relation
+                                    self._add_relation(
+                                        CodeRelation(
+                                            source_id=source_id,
+                                            target_id=node_id,
+                                            relation_type="CALLS",
+                                            properties={"is_local": True}
+                                        )
+                                    )
+                                    break
+                    else:
+                        # 處理跨文件函數調用
+                        # Handle cross-file function calls
+                        module_name = import_info["imported_module"]
+
+                        # 檢查模組定義索引
+                        # Check module definitions index
+                        if module_name in self.module_definitions and func_name in self.module_definitions[module_name]:
+                            target_node_id = self.module_definitions[module_name][func_name]
+
+                            # 創建調用關係
+                            # Create a CALLS relation
+                            self._add_relation(
+                                CodeRelation(
+                                    source_id=source_id,
+                                    target_id=target_node_id,
+                                    relation_type="CALLS",
+                                    properties={"original_name": import_info.get("original_name")}
+                                )
                             )
-                        )
                 
                 elif import_type == "CALLS_METHOD":
                     # 物件方法調用關係
                     # Method call on an imported object/class
-                    module_name = import_info["imported_module"]
-                    class_name = import_info["imported_class"]
                     method_name = import_info["method_name"]
+                    is_local = import_info.get("is_local", False)
                     
-                    # 檢查模組定義索引中的類別
-                    # Check that the class exists in the module definitions index
-                    if module_name in self.module_definitions and class_name in self.module_definitions[module_name]:
-                        class_node_id = self.module_definitions[module_name][class_name]
-                        
-                        # 尋找該類別定義的方法
-                        # Find the method defined in that class node
-                        for relation in self.relations:
-                            if relation.source_id == class_node_id and relation.relation_type == "DEFINES":
-                                # 確保 target_id 不是 None 再使用
-                                # Ensure target_id is not None before using it
-                                if relation.target_id is None:
-                                    continue
-                                target_node = self.nodes.get(relation.target_id)
-                                if target_node and target_node.node_type == "Method" and target_node.name == method_name:
+                    if is_local:
+                        # 處理本地方法調用 - 在當前文件中查找
+                        # Handle local method calls - search in current file
+                        source_node = self.nodes.get(source_id)
+                        if source_node:
+                            current_file = source_node.file_path
+
+                            # Search for the method in the same file
+                            for node_id, node in self.nodes.items():
+                                if (node.node_type == "Method" and
+                                    node.name == method_name and
+                                    node.file_path == current_file):
                                     # 創建調用關係
-                                    # Create a CALLS relation to the method node
+                                    # Create a CALLS relation
                                     self._add_relation(
                                         CodeRelation(
                                             source_id=source_id,
-                                            target_id=relation.target_id,
+                                            target_id=node_id,
                                             relation_type="CALLS",
                                             properties={
                                                 "object": import_info.get("original_obj_name"),
-                                                "class": class_name
+                                                "is_local": True
                                             }
                                         )
                                     )
                                     break
+                    else:
+                        # 處理跨文件方法調用
+                        # Handle cross-file method calls
+                        module_name = import_info["imported_module"]
+                        class_name = import_info["imported_class"]
+
+                        # 檢查模組定義索引中的類別
+                        # Check that the class exists in the module definitions index
+                        if module_name in self.module_definitions and class_name in self.module_definitions[module_name]:
+                            class_node_id = self.module_definitions[module_name][class_name]
+
+                            # 尋找該類別定義的方法
+                            # Find the method defined in that class node
+                            for relation in self.relations:
+                                if relation.source_id == class_node_id and relation.relation_type == "DEFINES":
+                                    # 確保 target_id 不是 None 再使用
+                                    # Ensure target_id is not None before using it
+                                    if relation.target_id is None:
+                                        continue
+                                    target_node = self.nodes.get(relation.target_id)
+                                    if target_node and target_node.node_type == "Method" and target_node.name == method_name:
+                                        # 創建調用關係
+                                        # Create a CALLS relation to the method node
+                                        self._add_relation(
+                                            CodeRelation(
+                                                source_id=source_id,
+                                                target_id=relation.target_id,
+                                                relation_type="CALLS",
+                                                properties={
+                                                    "object": import_info.get("original_obj_name"),
+                                                    "class": class_name
+                                                }
+                                            )
+                                        )
+                                        break
 
 
 # 使用範例

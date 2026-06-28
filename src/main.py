@@ -28,6 +28,58 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+# Module-level worker function for parallel processing (must be picklable)
+def _parse_file_worker(file_path: str, use_ast_grep: bool, ast_grep_languages: List[str], ast_grep_fallback: bool) -> Tuple[Dict, Dict, List, Dict, List]:
+    """Worker function to parse a single file (module-level for pickling)
+
+    Args:
+        file_path: Path to the source file
+        use_ast_grep: Whether to use ast-grep
+        ast_grep_languages: List of languages to use with ast-grep
+        ast_grep_fallback: Whether to fallback to legacy parser
+
+    Returns:
+        Tuple of (nodes, module_definitions, pending_imports, module_to_file, relations)
+    """
+    try:
+        # When USE_AST_GREP is enabled, use MultiLanguageParser
+        if use_ast_grep:
+            from src.ast_parser.multi_parser import MultiLanguageParser
+            parser = MultiLanguageParser(
+                use_ast_grep=True,
+                ast_grep_languages=ast_grep_languages,
+                ast_grep_fallback=ast_grep_fallback
+            )
+        else:
+            # Legacy routing: Select parser based on file extension
+            ext = os.path.splitext(file_path)[1].lower()
+
+            if ext == '.py':
+                from src.ast_parser.parser import ASTParser
+                parser = ASTParser()
+            elif ext in ['.js', '.ts', '.jsx', '.tsx']:
+                from src.ast_parser.typescript_parser import TypeScriptParser
+                parser = TypeScriptParser()
+            else:
+                logger.warning(f"Unsupported file extension: {ext} ({file_path})")
+                # Return five elements to match the expected tuple structure:
+                # (nodes, module_definitions, pending_imports, module_to_file, relations)
+                return ({}, {}, [], {}, [])
+
+        parser.parse_file(file_path, build_index=True)
+
+        return (
+            dict(parser.nodes),
+            dict(parser.module_definitions),
+            list(parser.pending_imports),
+            dict(parser.module_to_file),
+            list(parser.relations)
+        )
+    except Exception as e:
+        logger.error(f"Error parsing file {file_path}: {e}")
+        return ({}, {}, [], {}, [])
+
+
 class CodebaseKnowledgeGraph:
     """Class for creating and managing the codebase knowledge graph"""
     
@@ -339,6 +391,7 @@ class CodebaseKnowledgeGraph:
         all_module_definitions = {}
         all_pending_imports = []
         all_module_to_file = {}
+        all_relations = []  # Critical: collect relations from all files
         
         # Collect all source files
         source_files = self._collect_source_files(directory_path)
@@ -348,13 +401,14 @@ class CodebaseKnowledgeGraph:
             try:
                 parser = self._get_parser_for_file(file_path)
                 if parser:
-                    nodes, _ = parser.parse_file(file_path, build_index=True)
+                    nodes, relations = parser.parse_file(file_path, build_index=True)
                     
                     # Merge results
                     all_nodes.update(nodes)
                     all_module_definitions.update(parser.module_definitions)
                     all_pending_imports.extend(parser.pending_imports)
                     all_module_to_file.update(parser.module_to_file)
+                    all_relations.extend(relations)  # Critical: preserve structural relations
             except Exception as e:
                 logger.error(f"Error parsing file {file_path}: {e}")
         
@@ -366,6 +420,7 @@ class CodebaseKnowledgeGraph:
         temp_parser.module_definitions = all_module_definitions
         temp_parser.pending_imports = all_pending_imports
         temp_parser.module_to_file = all_module_to_file
+        temp_parser.relations = all_relations  # Critical: preserve structural relations from first pass
         temp_parser._process_pending_imports()
         
         return all_nodes, temp_parser.relations
@@ -381,7 +436,6 @@ class CodebaseKnowledgeGraph:
             Node dictionary and relationship list
         """
         from src.ast_parser.parser import ASTParser
-        from src.ast_parser.typescript_parser import TypeScriptParser
         
         try:
             # First pass: Parse all files in parallel to build module definition index
@@ -393,52 +447,21 @@ class CodebaseKnowledgeGraph:
             all_module_definitions = {}
             all_pending_imports = []
             all_module_to_file = {}
-            
-            def parse_file_worker(file_path: str) -> Tuple[Dict, Dict, List, Dict]:
-                """Worker function to parse a single file
-                
-                Args:
-                    file_path: Path to the source file
-                    
-                Returns:
-                    Tuple of (nodes, module_definitions, pending_imports, module_to_file)
-                """
-                try:
-                    # When USE_AST_GREP is enabled, use MultiLanguageParser
-                    if self.use_ast_grep:
-                        parser = MultiLanguageParser(
-                            use_ast_grep=True,
-                            ast_grep_languages=self.ast_grep_languages,
-                            ast_grep_fallback=self.ast_grep_fallback
-                        )
-                    else:
-                        # Legacy routing: Select parser based on file extension
-                        ext = os.path.splitext(file_path)[1].lower()
-                        
-                        if ext == '.py':
-                            parser = ASTParser()
-                        elif ext in ['.js', '.ts', '.jsx', '.tsx']:
-                            parser = TypeScriptParser()
-                        else:
-                            logger.warning(f"Unsupported file extension: {ext} ({file_path})")
-                            return ({}, {}, [], {})
-                    
-                    parser.parse_file(file_path, build_index=True)
-                    
-                    return (
-                        dict(parser.nodes),
-                        dict(parser.module_definitions),
-                        list(parser.pending_imports),
-                        dict(parser.module_to_file)
-                    )
-                except Exception as e:
-                    logger.error(f"Error parsing file {file_path}: {e}")
-                    return ({}, {}, [], {})
+            all_relations = []  # Critical: collect relations from all workers
             
             # Use the processing pool manager to process files in parallel
             with get_processing_pool() as pool:
-                # Submit all file parsing tasks
-                futures = [pool.submit(parse_file_worker, file_path) for file_path in source_files]
+                # Submit all file parsing tasks using the module-level worker function
+                futures = [
+                    pool.submit(
+                        _parse_file_worker,
+                        file_path,
+                        self.use_ast_grep,
+                        self.ast_grep_languages,
+                        self.ast_grep_fallback
+                    )
+                    for file_path in source_files
+                ]
                 
                 # Filter out None values (though submit() should always return a Future)
                 futures = [f for f in futures if f is not None]
@@ -447,13 +470,14 @@ class CodebaseKnowledgeGraph:
                 completed = 0
                 for future in as_completed(futures):
                     try:
-                        nodes, module_defs, pending, module_files = future.result()
+                        nodes, module_defs, pending, module_files, relations = future.result()
                         
                         # Merge results
                         all_nodes.update(nodes)
                         all_module_definitions.update(module_defs)
                         all_pending_imports.extend(pending)
                         all_module_to_file.update(module_files)
+                        all_relations.extend(relations)  # Critical: preserve structural relations
                         
                         completed += 1
                         if completed % 10 == 0:
@@ -461,7 +485,7 @@ class CodebaseKnowledgeGraph:
                     except Exception as e:
                         logger.error(f"Error processing file result: {e}")
             
-            logger.info(f"First pass complete: Parsed {len(all_nodes)} nodes")
+            logger.info(f"First pass complete: Parsed {len(all_nodes)} nodes and {len(all_relations)} structural relationships")
             
             # Second pass: Process pending imports sequentially
             # This must be sequential because it requires the complete module definition index
@@ -473,8 +497,9 @@ class CodebaseKnowledgeGraph:
             final_parser.module_definitions = all_module_definitions
             final_parser.pending_imports = all_pending_imports
             final_parser.module_to_file = all_module_to_file
+            final_parser.relations = all_relations  # Critical: preserve structural relations from first pass
             
-            # Process all pending imports
+            # Process all pending imports (this will ADD import-related relations)
             final_parser._process_pending_imports()
             
             logger.info(f"Second pass complete: Processed {len(final_parser.relations)} relationships")
@@ -576,7 +601,46 @@ class CodebaseKnowledgeGraph:
                 "file_path": node.file_path,
                 "line_no": node.line_no
             }
-            
+
+            # Add special properties for File nodes
+            if node.node_type == "File":
+                # Add 'path' property (required by database constraint)
+                properties["path"] = node.file_path
+
+                # Add 'language' property (detect from file extension or node properties)
+                language = node.properties.get("language")
+                if not language:
+                    # Detect language from file extension
+                    ext = os.path.splitext(node.file_path)[1].lower()
+                    language_map = {
+                        ".py": "python",
+                        ".js": "javascript",
+                        ".jsx": "javascript",
+                        ".ts": "typescript",
+                        ".tsx": "typescript",
+                        ".java": "java",
+                        ".cpp": "cpp",
+                        ".cc": "cpp",
+                        ".cxx": "cpp",
+                        ".c": "c",
+                        ".h": "c",
+                        ".hpp": "cpp",
+                        ".rs": "rust",
+                        ".go": "go",
+                    }
+                    language = language_map.get(ext, "unknown")
+                properties["language"] = language
+
+                # Add 'size' property (file size in bytes)
+                try:
+                    if os.path.exists(node.file_path):
+                        properties["size"] = os.path.getsize(node.file_path)
+                    else:
+                        properties["size"] = 0
+                except Exception as e:
+                    logger.warning(f"Could not get file size for {node.file_path}: {e}")
+                    properties["size"] = 0
+
             # Add node type specific properties
             if node.end_line_no:
                 properties["end_line_no"] = node.end_line_no

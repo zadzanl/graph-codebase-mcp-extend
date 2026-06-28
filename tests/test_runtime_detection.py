@@ -39,6 +39,7 @@ class TestRuntimeDetection:
         # Standard Python should use ProcessPoolExecutor (return False)
         # unless it's a free-threaded build with GIL disabled
     
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_optimal_worker_count_default(self):
         """Test optimal worker count calculation with defaults."""
         result = get_optimal_worker_count()
@@ -163,6 +164,7 @@ class TestRuntimeDetectionMocked:
         # Should still use ProcessPoolExecutor when GIL is enabled
         assert should_use_threads() is False
     
+    @patch.dict(os.environ, {}, clear=True)
     @patch('src.utils.runtime_detection.os.cpu_count')
     def test_get_optimal_worker_count_none_cpu_count(self, mock_cpu_count):
         """Test worker count calculation when cpu_count returns None."""

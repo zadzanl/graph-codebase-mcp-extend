@@ -2,12 +2,16 @@
 
 import os
 import json
+import logging
 from typing import Dict, List, Optional, Tuple, Any, Union, Set
 
 from ast_grep_py import SgRoot, SgNode
 
 from .base_adapter import LanguageAdapter
 from ast_parser.parser import CodeNode, CodeRelation
+
+
+logger = logging.getLogger(__name__)
 
 
 class PythonAstGrepAdapter(LanguageAdapter):
@@ -64,7 +68,10 @@ class PythonAstGrepAdapter(LanguageAdapter):
             self._parse_classes(root, build_index, module_name)
             self._parse_top_level_functions(root, build_index, module_name)
             self._parse_global_variables(root, file_node_id)
-            
+
+            # Resolve pending local relations (e.g., forward references to classes defined later)
+            self._resolve_pending_local_relations()
+
             return self.nodes, self.relations
             
         except Exception as e:
@@ -223,14 +230,33 @@ class PythonAstGrepAdapter(LanguageAdapter):
                             "original_name": base_name
                         })
                     else:
-                        # Local base class
-                        self.relations.append(
-                            CodeRelation(
-                                source_id=node_id,
-                                target_id=f"Class:{self.current_file}:{base_name}:0",
-                                relation_type="EXTENDS",
+                        # Local base class - look up actual ID from parsed nodes
+                        # Find the base class node to get its actual line number
+                        base_class_id = None
+                        for node_id_key, node in self.nodes.items():
+                            if (node.node_type == "Class" and
+                                node.name == base_name and
+                                node.file_path == self.current_file):
+                                base_class_id = node.node_id
+                                break
+
+                        if base_class_id:
+                            self.relations.append(
+                                CodeRelation(
+                                    source_id=node_id,
+                                    target_id=base_class_id,
+                                    relation_type="EXTENDS",
+                                )
                             )
-                        )
+                        else:
+                            # Base class not found yet (might be defined later in the file)
+                            # Add to pending for second pass
+                            self.pending_local_relations.append({
+                                "type": "EXTENDS",
+                                "source_id": node_id,
+                                "target_name": base_name,
+                                "target_type": "Class"
+                            })
         
         # Parse class body (methods and attributes)
         prev_class = self.current_class
@@ -555,13 +581,14 @@ class PythonAstGrepAdapter(LanguageAdapter):
                 })
             else:
                 # Call to local function
-                self.relations.append(
-                    CodeRelation(
-                        source_id=self.current_function,
-                        target_id=f"Function:{self.current_file}:{func_name}:0",
-                        relation_type="CALLS",
-                    )
-                )
+                self.pending_imports.append({
+                    "type": "CALLS",
+                    "source_id": self.current_function,
+                    "imported_module": None,
+                    "imported_name": func_name,
+                    "original_name": func_name,
+                    "is_local": True,
+                })
         
         elif func_node.kind() == "attribute":
             # Method call: obj.method()
@@ -585,11 +612,52 @@ class PythonAstGrepAdapter(LanguageAdapter):
                     })
                 else:
                     # Method call on local object
-                    self.relations.append(
-                        CodeRelation(
-                            source_id=self.current_function,
-                            target_id=f"Method:{self.current_file}:{method_name}:0",
-                            relation_type="CALLS",
-                            properties={"object": obj_name},
-                        )
+                    self.pending_imports.append({
+                        "type": "CALLS_METHOD",
+                        "source_id": self.current_function,
+                        "imported_module": None,
+                        "imported_class": None,
+                        "method_name": method_name,
+                        "original_obj_name": obj_name,
+                        "is_local": True,
+                    })
+
+    def _resolve_pending_local_relations(self) -> None:
+        """
+        Resolve pending local relations that reference entities in the same file.
+        This is used for forward references (e.g., a class extending another class defined later).
+        """
+        for pending in self.pending_local_relations:
+            rel_type = pending["type"]
+            source_id = pending["source_id"]
+            target_name = pending["target_name"]
+            target_type = pending.get("target_type", "Class")
+
+            # Find the target node
+            target_id = None
+            for node_id, node in self.nodes.items():
+                if (node.node_type == target_type and
+                    node.name == target_name and
+                    node.file_path == self.current_file):
+                    target_id = node.node_id
+                    break
+
+            if target_id:
+                self.relations.append(
+                    CodeRelation(
+                        source_id=source_id,
+                        target_id=target_id,
+                        relation_type=rel_type,
                     )
+                )
+            else:
+                logger.warning(
+                    "Could not resolve %s relation from %s to %s:%s",
+                    rel_type,
+                    source_id,
+                    target_type,
+                    target_name,
+                )
+
+        # Clear pending local relations after resolution
+        self.pending_local_relations = []
