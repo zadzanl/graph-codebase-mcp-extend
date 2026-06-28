@@ -40,6 +40,14 @@ class TestMixedCodebase(unittest.TestCase):
             f.write(content)
         return file_path
 
+    def _create_processor_for_helpers(self) -> CodebaseKnowledgeGraph:
+        """Create a processor instance for helper-method tests without opening Neo4j."""
+        processor = CodebaseKnowledgeGraph.__new__(CodebaseKnowledgeGraph)
+        processor.use_ast_grep = False
+        processor.ast_grep_languages = ["python", "javascript", "typescript"]
+        processor.ast_grep_fallback = True
+        return processor
+
     def test_collect_mixed_source_files(self):
         """Test that file collection includes all supported extensions."""
         # Create test files
@@ -51,7 +59,7 @@ class TestMixedCodebase(unittest.TestCase):
         self._create_test_file("README.md", "# Documentation")  # Should be ignored
         
         # Create processor instance
-        processor = CodebaseKnowledgeGraph(self.mock_embedder, self.mock_graph_db)
+        processor = self._create_processor_for_helpers()
         
         # Collect files
         files = processor._collect_source_files(self.test_dir)
@@ -79,7 +87,7 @@ class Person:
         self.name = name
 """)
         
-        processor = CodebaseKnowledgeGraph(self.mock_embedder, self.mock_graph_db)
+        processor = self._create_processor_for_helpers()
         parser = processor._get_parser_for_file(os.path.join(self.test_dir, "test.py"))
         
         # Should be ASTParser
@@ -89,7 +97,7 @@ class Person:
         """Test that JavaScript files are routed to TypeScriptParser."""
         self._create_test_file("test.js", "function test() {}")
         
-        processor = CodebaseKnowledgeGraph(self.mock_embedder, self.mock_graph_db)
+        processor = self._create_processor_for_helpers()
         parser = processor._get_parser_for_file(os.path.join(self.test_dir, "test.js"))
         
         # Should be TypeScriptParser
@@ -99,7 +107,7 @@ class Person:
         """Test that TypeScript files are routed to TypeScriptParser."""
         self._create_test_file("test.ts", "function test(): void {}")
         
-        processor = CodebaseKnowledgeGraph(self.mock_embedder, self.mock_graph_db)
+        processor = self._create_processor_for_helpers()
         parser = processor._get_parser_for_file(os.path.join(self.test_dir, "test.ts"))
         
         # Should be TypeScriptParser

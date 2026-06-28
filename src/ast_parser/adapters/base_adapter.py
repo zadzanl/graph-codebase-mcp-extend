@@ -35,6 +35,7 @@ class LanguageAdapter(ABC):
         # Indices for cross-file resolution (two-pass parsing)
         self.module_definitions: Dict[str, Dict[str, str]] = {}
         self.pending_imports: List[Dict[str, Any]] = []
+        self.pending_local_relations: List[Dict[str, Any]] = []  # For within-file forward references
         self.module_to_file: Dict[str, str] = {}
         self.established_relations: Set[str] = set()
     

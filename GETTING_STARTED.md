@@ -20,7 +20,7 @@ Get running quickly with these four steps:
 
 ### 1. Start Neo4j
 ```powershell
-docker run -d --name neo4j-codebase -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU neo4j:latest
+docker run -d --name neo4j-codebase -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:latest
 ```
 
 ### 2. Activate Python Environment
@@ -36,7 +36,7 @@ python src/main.py --codebase-path C:\Path\To\Your\Codebase
 ### 4. View Results
 Open http://localhost:7474 in your browser
 - Username: `neo4j`
-- Password: `bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU`
+- Password: `password`
 
 ---
 
@@ -59,13 +59,13 @@ Open http://localhost:7474 in your browser
 docker run -d --name neo4j-codebase \
   -p 7474:7474 \
   -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU \
+  -e NEO4J_AUTH=neo4j/password \
   neo4j:latest
 ```
 
 **Important Notes:**
 - Username MUST be `neo4j` (Neo4j requirement)
-- Password can be customized (default in this project: `bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU`)
+- Password can be customized (default in this project: `password`)
 - Port 7474: Neo4j Browser (Web UI)
 - Port 7687: Bolt protocol (Application connection)
 
@@ -86,7 +86,7 @@ docker logs neo4j-codebase --tail 20
 Open your browser and navigate to: http://localhost:7474
 
 - Username: `neo4j`
-- Password: `bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU`
+- Password: `password`
 
 ---
 
@@ -98,7 +98,7 @@ The `.env` file should be configured as follows:
 # Neo4j Database Connection Settings
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j                                    # MUST be 'neo4j'
-NEO4J_PASSWORD=bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU
+NEO4J_PASSWORD=password
 
 # OpenAI API Settings (optional if using Google Gemini)
 OPENAI_API_KEY=your_openai_api_key
@@ -106,7 +106,7 @@ OPENAI_API_KEY=your_openai_api_key
 # Google Gemini API Settings
 EMBEDDING_PROVIDER=google
 EMBEDDING_MODEL=text-embedding-004
-GEMINI_API_KEY=AIzaSyCnPygreyoGL1mX6XjX9jwL-xUt3V9piYU
+GEMINI_API_KEY=your_gemini_api_key
 
 # Other Configuration
 LOG_LEVEL=INFO
@@ -348,7 +348,7 @@ docker run -d --name neo4j-codebase \
   -p 7474:7474 -p 7687:7687 \
   -v neo4j-data:/data \
   -v neo4j-logs:/logs \
-  -e NEO4J_AUTH=neo4j/bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU \
+  -e NEO4J_AUTH=neo4j/password \
   neo4j:latest
 ```
 
@@ -377,10 +377,10 @@ Add this to your `mcp.json` file (typically located at `%APPDATA%\Code\User\mcp.
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
-        "NEO4J_PASSWORD": "bV5PazG8LUGAmre0B95VZSBs6RR3mCoNb0Txig1JNTU",
+        "NEO4J_PASSWORD": "password",
         "EMBEDDING_PROVIDER": "google",
         "EMBEDDING_MODEL": "text-embedding-004",
-        "GEMINI_API_KEY": "AIzaSyCnPygreyoGL1mX6XjX9jwL-xUt3V9piYU"
+        "GEMINI_API_KEY": "your_gemini_api_key"
       },
       "type": "stdio"
     }
